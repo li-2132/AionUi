@@ -5,9 +5,6 @@ name: Verify Homebrew Cask
 # the cask has been updated, it no longer submits bump PRs itself.
 
 on:
-  # Daily check at 08:00 UTC
-  schedule:
-    - cron: '0 8 * * *'
   workflow_dispatch:
     inputs:
       version:
