@@ -5,7 +5,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import type { ClientChannel } from 'ssh2';
+import type { Client, ClientChannel } from 'ssh2';
 import type {
   RemoteAgentConfig,
   RemoteConnectionConfig,
@@ -50,6 +50,7 @@ export class SimpleStdinTransport implements IRemoteTransport {
   private handlers: RemoteTransportHandlers = {};
   private connected = false;
   private poolAcquired = false;
+  private sshClient: Client | null = null;
   private inFlightPrompt = false;
   private currentChild: ChildProcess | null = null;
   private currentChannel: ClientChannel | null = null;
@@ -86,7 +87,7 @@ export class SimpleStdinTransport implements IRemoteTransport {
     if (this.config.protocol === 'ssh' && isSshConfig(cfg)) {
       // Pre-acquire the SSH client up-front so the first message has zero
       // handshake latency and host-key trust is enforced before chatting.
-      await sshClientPool.acquire(cfg);
+      this.sshClient = await sshClientPool.acquire(cfg);
       this.poolAcquired = true;
     }
 
@@ -101,6 +102,7 @@ export class SimpleStdinTransport implements IRemoteTransport {
       sshClientPool.release(this.config.connectionConfig);
       this.poolAcquired = false;
     }
+    this.sshClient = null;
     this.connected = false;
     this.remoteSessionId = null;
     this.handlers.onDisconnect?.('Simple stdin transport stopped');
@@ -258,10 +260,29 @@ export class SimpleStdinTransport implements IRemoteTransport {
 
   private async runOverSsh(prompt: string): Promise<void> {
     const ssh = this.config.connectionConfig as SshConnectionConfig;
-    const client = await sshClientPool.acquire(ssh);
-    if (!this.poolAcquired) this.poolAcquired = true;
     const command = this.buildSshCommand(ssh);
 
+    try {
+      await this.execOverSsh(await this.getSshClient(ssh), command, prompt);
+    } catch (error) {
+      if (!this.isChannelOpenFailure(error)) {
+        throw error;
+      }
+      sshClientPool.invalidate(ssh);
+      this.poolAcquired = false;
+      this.sshClient = null;
+      await this.execOverSsh(await this.getSshClient(ssh), command, prompt);
+    }
+  }
+
+  private async getSshClient(ssh: SshConnectionConfig): Promise<Client> {
+    if (this.sshClient) return this.sshClient;
+    this.sshClient = await sshClientPool.acquire(ssh);
+    this.poolAcquired = true;
+    return this.sshClient;
+  }
+
+  private execOverSsh(client: Client, command: string, prompt: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       client.exec(command, { pty: false }, (err, channel) => {
         if (err) {
@@ -273,6 +294,11 @@ export class SimpleStdinTransport implements IRemoteTransport {
         this.writePromptToChannel(channel, prompt);
       });
     });
+  }
+
+  private isChannelOpenFailure(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /channel open failure|open failed/i.test(message);
   }
 
   private buildSshCommand(ssh: SshConnectionConfig): string {

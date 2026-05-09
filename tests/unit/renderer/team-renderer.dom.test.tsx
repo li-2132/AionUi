@@ -172,6 +172,7 @@ vi.mock('@/renderer/pages/team/hooks/TeamPermissionContext', () => ({
 
 // Mock useTeamSession to return controllable statusMap and removeAgent
 const mockUseTeamSessionReturn = {
+  agents: [] as unknown[],
   statusMap: new Map<string, { slotId: string; status: string }>(),
   addAgent: vi.fn().mockResolvedValue(undefined),
   renameAgent: vi.fn().mockResolvedValue(undefined),
@@ -491,6 +492,7 @@ describe('TeamPage remove agent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    mockUseTeamSessionReturn.agents = makeAgents();
     mockRemoveAgentInvoke.mockResolvedValue(undefined);
   });
 
@@ -506,6 +508,26 @@ describe('TeamPage remove agent', () => {
     // The AgentChatSlot renders CloseSmall for non-leader agents
     const closeIcons = screen.getAllByTestId('close-icon');
     expect(closeIcons.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders agents from the live team session instead of the initial team prop', async () => {
+    mockUseTeamSessionReturn.agents = [
+      ...makeAgents(),
+      {
+        slotId: 'slot-member-2',
+        conversationId: 'conv-member-2',
+        role: 'teammate',
+        agentType: 'gemini',
+        agentName: 'Writer',
+        conversationType: 'gemini',
+        status: 'idle',
+      },
+    ];
+    const TeamPage = (await import('@renderer/pages/team/TeamPage')).default;
+
+    render(React.createElement(TeamPage, { team: makeTeam() }));
+
+    expect(screen.getAllByTestId('agent-identity').map((element) => element.textContent)).toContain('Writer');
   });
 
   it('calls ipcBridge.team.removeAgent when remove is triggered on idle agent', async () => {

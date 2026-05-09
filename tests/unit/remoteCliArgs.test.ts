@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import type { WslConnectionConfig } from '../../src/common/types/detectedAgent';
+import type { SshConnectionConfig, WslConnectionConfig } from '../../src/common/types/detectedAgent';
 import { resolveRemoteCliArgs } from '../../src/common/types/detectedAgent';
 import type { RemoteAgentConfig } from '../../src/process/agent/remote/types';
 import { SimpleStdinTransport } from '../../src/process/agent/remote/transport/SimpleStdinTransport';
@@ -110,6 +110,19 @@ describe('SimpleStdinTransport session continuity', () => {
     };
   }
 
+  function makeSshRemoteConfig(connectionConfig: SshConnectionConfig): RemoteAgentConfig {
+    return {
+      id: 'remote-ssh-1',
+      name: 'SSH Codex',
+      protocol: 'ssh',
+      url: 'ssh://devbox',
+      connectionConfig,
+      authType: 'none',
+      createdAt: 1,
+      updatedAt: 1,
+    };
+  }
+
   it('reuses the saved Claude session when reopening a stream-json remote conversation', async () => {
     const connectionConfig: WslConnectionConfig = {
       distro: 'Ubuntu',
@@ -185,5 +198,35 @@ describe('SimpleStdinTransport session continuity', () => {
       }
       vi.useRealTimers();
     }
+  });
+
+  it('retries SSH exec once after a channel open failure', async () => {
+    const connectionConfig: SshConnectionConfig = {
+      host: 'devbox',
+      port: 22,
+      username: 'xuan',
+      privateKeyPath: '/home/xuan/.ssh/id_rsa',
+      cliCommand: 'codex',
+      transportMode: 'simple-stdin',
+    };
+    const transport = new SimpleStdinTransport(makeSshRemoteConfig(connectionConfig), {
+      conversationId: 'conversation-ssh-1',
+    });
+    const fakeClient = {};
+    const testTransport = transport as unknown as {
+      runOverSsh: (prompt: string) => Promise<void>;
+      getSshClient: ReturnType<typeof vi.fn>;
+      execOverSsh: ReturnType<typeof vi.fn>;
+    };
+    testTransport.getSshClient = vi.fn().mockResolvedValue(fakeClient);
+    testTransport.execOverSsh = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('(SSH) Channel open failure: open failed'))
+      .mockResolvedValueOnce(undefined);
+
+    await testTransport.runOverSsh('hello');
+
+    expect(testTransport.getSshClient).toHaveBeenCalledTimes(2);
+    expect(testTransport.execOverSsh).toHaveBeenCalledTimes(2);
   });
 });

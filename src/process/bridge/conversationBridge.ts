@@ -73,17 +73,9 @@ const buildRemoteWorkspaceTree = async (
   const onSearchProcess = options.onSearchProcess ?? (() => {});
   const matchSearch = searchText ? (value: string) => value.includes(searchText) : () => false;
 
-  let stat: Awaited<ReturnType<IRemoteFs['stat']>>;
-  try {
-    stat = await fs.stat(targetPath);
-  } catch {
-    return null;
-  }
-  if (!stat.isDirectory) return null;
-
   const relativePath = targetPath === root ? '' : targetPath.slice(root.endsWith('/') ? root.length : root.length + 1);
   const result: IDirOrFile = {
-    name: stat.name || targetPath.split('/').filter(Boolean).pop() || targetPath,
+    name: targetPath.split('/').filter(Boolean).pop() || targetPath,
     fullPath: targetPath,
     relativePath,
     isDir: true,
@@ -98,7 +90,7 @@ const buildRemoteWorkspaceTree = async (
   try {
     entries = await fs.list(targetPath);
   } catch {
-    return result;
+    return null;
   }
 
   for (const entry of entries) {

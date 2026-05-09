@@ -164,6 +164,10 @@ export const sshClientPool = {
     }
   },
 
+  invalidate(config: SshConnectionConfig): void {
+    teardown(poolKey(config));
+  },
+
   /** Snapshot fingerprint of a host without auth — used by testConnection. */
   async probeFingerprint(config: SshConnectionConfig): Promise<string> {
     let captured = '';

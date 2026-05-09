@@ -515,12 +515,16 @@ const ChatWorkspace: React.FC<WorkspaceProps> = ({
                   treeHook.setExpandedKeys(keys);
                 }}
                 loadMore={(treeNode) => {
-                  const path = treeNode.props.dataRef.fullPath;
+                  const nodeData = treeNode.props.dataRef as IDirOrFile;
+                  if (nodeData.children) {
+                    return Promise.resolve();
+                  }
+                  const path = nodeData.fullPath;
                   return ipcBridge.conversation.getWorkspace
                     .invoke({ conversation_id, workspace, path })
                     .then((res) => {
                       if (res[0]?.children) {
-                        treeNode.props.dataRef.children = res[0].children;
+                        nodeData.children = res[0].children;
                         treeHook.setFiles([...treeHook.files]);
                       }
                     })

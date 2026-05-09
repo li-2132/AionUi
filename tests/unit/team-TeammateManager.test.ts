@@ -504,6 +504,56 @@ describe('TeammateManager', () => {
       mgr.dispose();
     });
 
+    it('keeps team context in subsequent gemini leader wakes', async () => {
+      const leader = makeAgent({
+        slotId: 'slot-lead',
+        conversationId: 'conv-lead',
+        role: 'leader',
+        agentName: 'Gemini Lead',
+        agentType: 'gemini',
+        conversationType: 'gemini',
+        status: 'idle',
+      });
+      const checker = makeAgent({
+        slotId: 'slot-check',
+        conversationId: 'conv-check',
+        role: 'teammate',
+        agentName: 'Checker',
+        agentType: 'codex',
+        conversationType: 'acp',
+        status: 'idle',
+      });
+      const mockSendMessage = vi.fn().mockResolvedValue(undefined);
+      const { mgr, mailbox, workerTaskManager } = makeTeammateManager([leader, checker], {
+        teamWorkspace: '/workspace/project',
+      });
+      vi.mocked(workerTaskManager.getOrBuildTask).mockResolvedValue({
+        sendMessage: mockSendMessage,
+      } as never);
+      vi.mocked(mailbox.readUnread).mockResolvedValue([
+        {
+          id: 'msg-1',
+          teamId: 'team-1',
+          toAgentId: 'slot-lead',
+          fromAgentId: 'user',
+          type: 'message',
+          content: 'What is the team status?',
+          read: false,
+          createdAt: 1000,
+        },
+      ]);
+
+      await mgr.wake('slot-lead');
+
+      const callArg = mockSendMessage.mock.calls[0][0];
+      expect(callArg.input).toContain('## Team Context Reminder');
+      expect(callArg.input).toContain('You are the team leader');
+      expect(callArg.input).toContain('Gemini Lead');
+      expect(callArg.input).toContain('Checker (codex, teammate, status: idle)');
+      expect(callArg.input).toContain('/workspace/project');
+      mgr.dispose();
+    });
+
     it('sets status to failed and rethrows when sendMessage throws', async () => {
       const agent = makeAgent({ slotId: 'slot-1', status: 'idle' });
       const { mgr, workerTaskManager } = makeTeammateManager([agent]);

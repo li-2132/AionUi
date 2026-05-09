@@ -233,7 +233,10 @@ export class TeammateManager extends EventEmitter {
           this.activeWakes.delete(slotId);
           return;
         }
-        message = formatMessages(mailboxMessages, this.agents);
+        message = `${this.buildContinuityPrompt(agent, teammates)}\n\n## Unread Messages\n${formatMessages(
+          mailboxMessages,
+          this.agents
+        )}`;
       }
 
       console.log(
@@ -291,6 +294,36 @@ export class TeammateManager extends EventEmitter {
     this.wakeTimeouts.clear();
     this.activeWakes.clear();
     this.removeAllListeners();
+  }
+
+  private buildContinuityPrompt(agent: TeamAgent, teammates: TeamAgent[]): string {
+    const roleInstruction =
+      agent.role === 'leader'
+        ? 'You are the team leader. Coordinate teammates through team_* tools and synthesize their results for the user.'
+        : 'You are a team member. Work on assigned tasks, then report results through team_* tools.';
+    const teammateList =
+      teammates.length > 0
+        ? teammates.map((t) => `- ${t.agentName} (${t.agentType}, ${t.role}, status: ${t.status})`).join('\n')
+        : '- No other teammates are registered yet.';
+    const workspaceLine = this.teamWorkspace ? `\n- Shared team workspace: \`${this.teamWorkspace}\`` : '';
+    const remoteProtocolReminder =
+      agent.conversationType === 'remote'
+        ? '\nIf you need to call a team tool from this remote text CLI, emit a fenced `aionui_team` JSON action block.'
+        : '';
+
+    return `## Team Context Reminder
+You are still operating inside AionUi Team Mode.
+- Team id: ${this.teamId}
+- Your slot id: ${agent.slotId}
+- Your name: ${agent.agentName}
+- Your backend: ${agent.agentType}${workspaceLine}
+
+${roleInstruction}
+
+Current teammates:
+${teammateList}
+
+Use team_members and team_task_list when you need current state. Use team_* tools for coordination.${remoteProtocolReminder}`;
   }
 
   // ---------------------------------------------------------------------------

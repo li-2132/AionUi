@@ -470,10 +470,10 @@ const TeamPageContent: React.FC<TeamPageContentProps> = ({ team, onRenameTeam })
 
 const TeamPage: React.FC<Props> = ({ team }) => {
   const { t } = useTranslation();
-  const { statusMap, renameAgent, removeAgent, mutateTeam } = useTeamSession(team);
+  const { agents, statusMap, renameAgent, removeAgent, mutateTeam } = useTeamSession(team);
   const { user } = useAuth();
   const { mutate: globalMutate } = useSWRConfig();
-  const defaultSlotId = team.agents[0]?.slotId ?? '';
+  const defaultSlotId = agents[0]?.slotId ?? '';
 
   const handleRemoveAgentWithConfirm = useCallback(
     (slotId: string) => {
@@ -516,7 +516,7 @@ const TeamPage: React.FC<Props> = ({ team }) => {
 
   return (
     <TeamTabsProvider
-      agents={team.agents}
+      agents={agents}
       statusMap={statusMap}
       defaultActiveSlotId={defaultSlotId}
       teamId={team.id}
