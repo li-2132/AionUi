@@ -393,6 +393,7 @@ export class TeamSessionService {
     const extra = conversation.extra as {
       cliPath?: string;
       customAgentId?: string;
+      remoteAgentId?: string;
       presetAssistantId?: string;
       gateway?: { cliPath?: string };
       teamMcpStdioConfig?: { env?: Array<{ name?: string; value?: string }> };
@@ -412,7 +413,7 @@ export class TeamSessionService {
       conversationType: conversation.type,
       status: this.mapRecoveredStatus(conversation.status),
       cliPath: extra.cliPath || extra.gateway?.cliPath,
-      customAgentId: extra.customAgentId || extra.presetAssistantId,
+      customAgentId: agentType === 'remote' ? extra.remoteAgentId : extra.customAgentId || extra.presetAssistantId,
       model: extra.currentModelId || (conversation as { model?: { useModel?: string } }).model?.useModel,
     };
   }

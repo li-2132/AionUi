@@ -6,7 +6,7 @@ type BuildRolePromptParams = {
   agent: TeamAgent;
   teammates: TeamAgent[];
   /** Only needed for leader prompts */
-  availableAgentTypes?: Array<{ type: string; name: string }>;
+  availableAgentTypes?: Array<{ type: string; name: string; remoteAgentId?: string }>;
   /** Only needed for leader prompts — preset assistants spawnable via custom_agent_id */
   availableAssistants?: Array<{ customAgentId: string; name: string; backend: string; description?: string }>;
   renamedAgents?: Map<string, string>;

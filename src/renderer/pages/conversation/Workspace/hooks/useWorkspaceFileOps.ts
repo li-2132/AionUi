@@ -21,7 +21,8 @@ import { getPathSeparator, replacePathInList, updateTreeForRename } from '../uti
 
 interface UseWorkspaceFileOpsOptions {
   workspace: string;
-  eventPrefix: 'gemini' | 'acp' | 'codex' | 'aionrs';
+  eventPrefix: 'gemini' | 'acp' | 'codex' | 'aionrs' | 'remote';
+  remoteAgentId?: string;
   messageApi: MessageApi;
   t: (key: string) => string;
 
@@ -57,6 +58,7 @@ export function useWorkspaceFileOps(options: UseWorkspaceFileOpsOptions) {
   const {
     workspace,
     eventPrefix,
+    remoteAgentId,
     messageApi,
     t,
     setFiles,
@@ -394,7 +396,14 @@ export function useWorkspaceFileOps(options: UseWorkspaceFileOpsOptions) {
           content = await ipcBridge.fs.getImageBase64.invoke({ path: nodeData.fullPath });
         } else {
           // 文本文件：使用 UTF-8 编码读取 / Text files: Read using UTF-8 encoding
-          content = await ipcBridge.fs.readFile.invoke({ path: nodeData.fullPath });
+          content =
+            eventPrefix === 'remote' && remoteAgentId
+              ? await ipcBridge.remoteFs.read.invoke({
+                  agentId: remoteAgentId,
+                  path: nodeData.fullPath,
+                  maxBytes: LARGE_TEXT_PREVIEW_MAX_LENGTH,
+                })
+              : await ipcBridge.fs.readFile.invoke({ path: nodeData.fullPath });
 
           // 大文本仅保留前一段预览内容，避免切换/关闭 tab 时卡顿
           // Keep only first chunk for large text preview to reduce tab switch/close jank
@@ -419,7 +428,7 @@ export function useWorkspaceFileOps(options: UseWorkspaceFileOpsOptions) {
         messageApi.error(t('conversation.workspace.contextMenu.previewFailed'));
       }
     },
-    [closeContextMenu, openPreview, workspace, messageApi, t]
+    [closeContextMenu, eventPrefix, openPreview, remoteAgentId, workspace, messageApi, t]
   );
 
   /**

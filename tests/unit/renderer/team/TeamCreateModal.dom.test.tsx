@@ -19,11 +19,13 @@ Object.defineProperty(window, 'matchMedia', {
 
 const mockShowOpen = vi.hoisted(() => vi.fn().mockResolvedValue([]));
 const mockCreateTeam = vi.hoisted(() => vi.fn());
+const mockGetRemoteAgent = vi.hoisted(() => vi.fn());
 const mockIsElectronDesktop = vi.hoisted(() => vi.fn(() => true));
 
 const cliAgents: AvailableAgent[] = [
   { backend: 'gemini', name: 'Gemini CLI', cliPath: '/usr/bin/gemini' },
   { backend: 'claude', name: 'Claude Code', cliPath: '/usr/bin/claude' },
+  { backend: 'remote', name: 'SSH Codex', customAgentId: 'remote-1' },
 ];
 
 const presetAssistants: AvailableAgent[] = [
@@ -52,6 +54,11 @@ vi.mock('@/common', () => ({
     team: {
       create: {
         invoke: mockCreateTeam,
+      },
+    },
+    remoteAgent: {
+      get: {
+        invoke: mockGetRemoteAgent,
       },
     },
   },
@@ -129,6 +136,15 @@ vi.mock('@/renderer/components/base/AionModal', () => ({
   },
 }));
 
+vi.mock('@/renderer/components/file/RemoteFileBrowserModal', () => ({
+  default: ({ visible, onConfirm }: { visible?: boolean; onConfirm: (path: string) => void }) =>
+    visible ? (
+      <button data-testid='remote-browser-confirm' onClick={() => onConfirm('/home/xuan/project')}>
+        pick remote
+      </button>
+    ) : null,
+}));
+
 import TeamCreateModal from '@/renderer/pages/team/components/TeamCreateModal';
 
 describe('TeamCreateModal', () => {
@@ -136,6 +152,12 @@ describe('TeamCreateModal', () => {
     vi.clearAllMocks();
     localStorage.clear();
     mockIsElectronDesktop.mockReturnValue(true);
+    mockGetRemoteAgent.mockResolvedValue({
+      id: 'remote-1',
+      name: 'SSH Codex',
+      protocol: 'ssh',
+      connectionConfig: { workingDir: '/home/xuan' },
+    });
   });
 
   it('uses the brighter dialog surface for the modal shell', () => {
@@ -210,6 +232,25 @@ describe('TeamCreateModal', () => {
       customAgentId: 'builtin-writing-buddy',
     });
     expect(onCreated).toHaveBeenCalledWith({ id: 'team-created' });
+  });
+
+  it('uses remote workspace browser for remote leaders', async () => {
+    render(<TeamCreateModal visible onClose={vi.fn()} onCreated={vi.fn()} />);
+
+    openLeaderDropdown();
+    const option = document.querySelector('[data-testid="team-create-agent-option-remote::remote-1"]') as HTMLElement;
+    expect(option).toBeTruthy();
+    fireEvent.click(option);
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('team-create-remote-workspace-trigger')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('team-create-workspace-trigger')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('team-create-remote-workspace-trigger'));
+    fireEvent.click(screen.getByTestId('remote-browser-confirm'));
+
+    expect(screen.getByText('/home/xuan/project')).toBeInTheDocument();
   });
 
   it('uses brighter surface tokens for workspace picker', () => {

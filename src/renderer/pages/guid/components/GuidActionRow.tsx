@@ -7,6 +7,7 @@
 import { ipcBridge } from '@/common';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
 import AcpConfigSelector from '@/renderer/components/agent/AcpConfigSelector';
+import RemoteFileBrowserModal from '@/renderer/components/file/RemoteFileBrowserModal';
 import { supportsModeSwitch, type AgentModeOption } from '@/renderer/utils/model/agentModes';
 import type { AcpSessionConfigOption } from '@/common/types/acpTypes';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
@@ -19,6 +20,7 @@ import { Button, Checkbox, Dropdown, Menu, Message, Tooltip } from '@arco-design
 import { ArrowUp, Brain, FolderOpen, Lightning, Plus, Shield, UploadOne } from '@icon-park/react';
 import React, { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import useSWR from 'swr';
 import styles from '../index.module.css';
 
 type GuidActionRowProps = {
@@ -99,6 +101,34 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   const modeBackend = effectiveModeAgent || selectedAgent;
   const showModeSwitch = supportsModeSwitch(modeBackend);
   const configOptionCount = (modelSelectorNode ? 1 : 0) + (showModeSwitch ? 1 : 0);
+
+  // When the selected agent is a remote one (kind=remote), resolve its config
+  // so the workspace picker can route to the remote browser instead of the
+  // local OS dialog.
+  const remoteAgentId =
+    selectedAgent === 'remote' && selectedAgentInfo?.customAgentId ? selectedAgentInfo.customAgentId : null;
+  const { data: remoteAgent } = useSWR(remoteAgentId ? ['remote-agent.get', remoteAgentId] : null, ([, id]) =>
+    ipcBridge.remoteAgent.get.invoke({ id })
+  );
+  const isRemoteFsAgent = remoteAgent?.protocol === 'wsl' || remoteAgent?.protocol === 'ssh';
+  const [remoteBrowserVisible, setRemoteBrowserVisible] = useState(false);
+
+  const handleSelectWorkspaceClick = useCallback(() => {
+    if (isRemoteFsAgent && remoteAgent) {
+      setRemoteBrowserVisible(true);
+      return;
+    }
+    ipcBridge.dialog.showOpen
+      .invoke({ properties: ['openDirectory', 'createDirectory'] })
+      .then((dirs) => {
+        if (dirs && dirs[0]) {
+          onSelectWorkspace(dirs[0]);
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to open directory dialog:', error);
+      });
+  }, [isRemoteFsAgent, remoteAgent, onSelectWorkspace]);
 
   // Browser file picker ref (WebUI only)
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -245,23 +275,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
         </div>
 
         {!isWebUI && (
-          <Button
-            className='sendbox-model-btn'
-            shape='round'
-            size='small'
-            onClick={() => {
-              ipcBridge.dialog.showOpen
-                .invoke({ properties: ['openDirectory', 'createDirectory'] })
-                .then((dirs) => {
-                  if (dirs && dirs[0]) {
-                    onSelectWorkspace(dirs[0]);
-                  }
-                })
-                .catch((error) => {
-                  console.error('Failed to open directory dialog:', error);
-                });
-            }}
-          >
+          <Button className='sendbox-model-btn' shape='round' size='small' onClick={handleSelectWorkspaceClick}>
             <span className='flex items-center gap-6px leading-none'>
               <FolderOpen theme='outline' size='14' fill='currentColor' style={{ lineHeight: 0, flexShrink: 0 }} />
               <span>{t('conversation.welcome.specifyWorkspace')}</span>
@@ -325,6 +339,20 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
           onClick={onSend}
         />
       </div>
+      {isRemoteFsAgent && remoteAgent && remoteAgentId && (
+        <RemoteFileBrowserModal
+          visible={remoteBrowserVisible}
+          agentId={remoteAgentId}
+          agent={remoteAgent}
+          mode='directory'
+          initialPath={remoteAgent.connectionConfig?.workingDir}
+          onConfirm={(path) => {
+            setRemoteBrowserVisible(false);
+            onSelectWorkspace(path);
+          }}
+          onCancel={() => setRemoteBrowserVisible(false)}
+        />
+      )}
     </div>
   );
 };

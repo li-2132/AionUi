@@ -18,6 +18,7 @@ import { skillSuggestWatcher } from '@process/services/cron/SkillSuggestWatcher'
 import BaseAgentManager from '@process/task/BaseAgentManager';
 import { IpcAgentEventEmitter } from '@process/task/IpcAgentEventEmitter';
 import { teamEventBus } from '@process/team/teamEventBus';
+import { isSshConfig, isWslConfig } from '@process/agent/remote/types';
 
 export interface RemoteAgentManagerData {
   conversation_id: string;
@@ -26,6 +27,8 @@ export interface RemoteAgentManagerData {
   sessionKey?: string;
   yoloMode?: boolean;
 }
+
+const isGeneratedRemoteTempWorkspace = (workspace: string): boolean => /(^|[/\\])remote-temp-\d+$/.test(workspace);
 
 class RemoteAgentManager extends BaseAgentManager<RemoteAgentManagerData> {
   core!: RemoteAgentCore;
@@ -51,10 +54,27 @@ class RemoteAgentManager extends BaseAgentManager<RemoteAgentManagerData> {
     if (!remoteConfig) {
       throw new Error(`Remote agent config not found: ${data.remoteAgentId}`);
     }
+    const effectiveRemoteConfig = (() => {
+      const workspace = data.workspace?.trim();
+      if (
+        !workspace ||
+        isGeneratedRemoteTempWorkspace(workspace) ||
+        (!isSshConfig(remoteConfig.connectionConfig) && !isWslConfig(remoteConfig.connectionConfig))
+      ) {
+        return remoteConfig;
+      }
+      return {
+        ...remoteConfig,
+        connectionConfig: {
+          ...remoteConfig.connectionConfig,
+          workingDir: workspace,
+        },
+      };
+    })();
 
     this.core = new RemoteAgentCore({
       conversationId: data.conversation_id,
-      remoteConfig,
+      remoteConfig: effectiveRemoteConfig,
       sessionKey: data.sessionKey,
       onStreamEvent: (msg) => this.handleStreamEvent(msg),
       onSignalEvent: (msg) => this.handleSignalEvent(msg),
@@ -91,10 +111,7 @@ class RemoteAgentManager extends BaseAgentManager<RemoteAgentManagerData> {
     }
 
     ipcBridge.conversation.responseStream.emit(msg);
-    // Only emit terminal events to team bus for agent lifecycle management
-    if (msg.type === 'finish' || msg.type === 'error') {
-      teamEventBus.emit('responseStream', msg);
-    }
+    teamEventBus.emit('responseStream', msg);
     channelEventBus.emitAgentMessage(this.conversation_id, msg);
   }
 
@@ -134,10 +151,7 @@ class RemoteAgentManager extends BaseAgentManager<RemoteAgentManagerData> {
     }
 
     ipcBridge.conversation.responseStream.emit(msg);
-    // Only emit terminal events to team bus for agent lifecycle management
-    if (msg.type === 'finish' || msg.type === 'error') {
-      teamEventBus.emit('responseStream', msg);
-    }
+    teamEventBus.emit('responseStream', msg);
     channelEventBus.emitAgentMessage(this.conversation_id, msg);
   }
 
@@ -247,7 +261,10 @@ class RemoteAgentManager extends BaseAgentManager<RemoteAgentManagerData> {
   }
 
   stop() {
-    return this.core?.stop?.() ?? Promise.resolve();
+    // "Stop" from the chat UI = soft cancel (rewind current generation,
+    // preserve session). The hard teardown happens via `kill()` when the
+    // worker is being disposed entirely.
+    return this.core?.cancelCurrent?.() ?? this.core?.stop?.() ?? Promise.resolve();
   }
 
   kill() {

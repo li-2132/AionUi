@@ -5,8 +5,16 @@
  */
 
 // Canonical definitions live in common/types/detectedAgent.ts
-import type { RemoteAgentProtocol, RemoteAgentAuthType } from '@/common/types/detectedAgent';
-export type { RemoteAgentProtocol, RemoteAgentAuthType } from '@/common/types/detectedAgent';
+import type { RemoteAgentProtocol, RemoteAgentAuthType, RemoteConnectionConfig } from '@/common/types/detectedAgent';
+export type {
+  RemoteAgentProtocol,
+  RemoteAgentAuthType,
+  RemoteConnectionConfig,
+  RemoteTransportMode,
+  WslConnectionConfig,
+  SshConnectionConfig,
+} from '@/common/types/detectedAgent';
+export { isWslConfig, isSshConfig, resolveRemoteCliArgs } from '@/common/types/detectedAgent';
 
 /** Last known connection status (cached for UI display) */
 export type RemoteAgentStatus = 'unknown' | 'connected' | 'pending' | 'error';
@@ -17,6 +25,8 @@ export type RemoteAgentConfig = {
   name: string;
   protocol: RemoteAgentProtocol;
   url: string;
+  /** Protocol-specific transport configuration (WSL / SSH); JSON-serialised in DB */
+  connectionConfig?: RemoteConnectionConfig;
   authType: RemoteAgentAuthType;
   authToken?: string;
   /** Skip TLS certificate verification (for self-signed certificates) */
@@ -42,6 +52,7 @@ export type RemoteAgentInput = {
   name: string;
   protocol: RemoteAgentProtocol;
   url: string;
+  connectionConfig?: RemoteConnectionConfig;
   authType: RemoteAgentAuthType;
   authToken?: string;
   /** Skip TLS certificate verification (for self-signed certificates) */

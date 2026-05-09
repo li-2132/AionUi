@@ -77,6 +77,11 @@ describe('initAgent — skill support', () => {
     workspace: string,
     options: { agentType?: string; backend?: string; enabledSkills?: string[] }
   ) => Promise<void>;
+  let createRemoteAgent: (options: Record<string, unknown>) => Promise<{
+    type: string;
+    name: string;
+    extra: { workspace: string; customWorkspace: boolean; remoteAgentId: string };
+  }>;
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -85,6 +90,7 @@ describe('initAgent — skill support', () => {
     const mod = await import('@process/utils/initAgent');
     hasNativeSkillSupport = mod.hasNativeSkillSupport;
     setupAssistantWorkspace = mod.setupAssistantWorkspace;
+    createRemoteAgent = mod.createRemoteAgent as typeof createRemoteAgent;
   });
 
   describe('hasNativeSkillSupport', () => {
@@ -124,6 +130,41 @@ describe('initAgent — skill support', () => {
     it('should return false for unknown backend names', () => {
       expect(hasNativeSkillSupport('unknown-agent')).toBe(false);
       expect(hasNativeSkillSupport('custom')).toBe(false);
+    });
+  });
+
+  describe('createRemoteAgent', () => {
+    it('does not create a local temp workspace when remote workspace is omitted', async () => {
+      const conversation = await createRemoteAgent({
+        type: 'remote',
+        model: {},
+        name: 'Remote',
+        extra: {
+          remoteAgentId: 'remote-1',
+        },
+      });
+
+      expect(conversation.extra.workspace).toBe('');
+      expect(conversation.extra.customWorkspace).toBe(false);
+      expect(conversation.name).toBe('');
+      expect(mkdirCalls.some((dir) => dir.includes('remote-temp-'))).toBe(false);
+    });
+
+    it('preserves an explicit remote workspace path without local path normalization', async () => {
+      const conversation = await createRemoteAgent({
+        type: 'remote',
+        model: {},
+        name: 'Remote',
+        extra: {
+          remoteAgentId: 'remote-1',
+          workspace: '/home/xuan/project',
+        },
+      });
+
+      expect(conversation.extra.workspace).toBe('/home/xuan/project');
+      expect(conversation.extra.customWorkspace).toBe(true);
+      expect(conversation.name).toBe('/home/xuan/project');
+      expect(mkdirCalls).toHaveLength(0);
     });
   });
 

@@ -14,6 +14,7 @@ const ChatSider: React.FC<{
   teamId?: string;
 }> = ({ conversation, teamId }) => {
   const [messageApi, messageContext] = Message.useMessage({ maxCount: 1 });
+  const remoteAgentId = (conversation?.extra as { remoteAgentId?: string } | undefined)?.remoteAgentId;
 
   let workspaceNode: React.ReactNode = null;
   if (conversation?.type === 'gemini') {
@@ -51,6 +52,17 @@ const ChatSider: React.FC<{
         conversation_id={conversation.id}
         workspace={conversation.extra.workspace}
         eventPrefix='aionrs'
+        messageApi={messageApi}
+        teamId={teamId}
+      ></ChatWorkspace>
+    );
+  } else if (conversation?.type === 'remote' && conversation.extra?.workspace) {
+    workspaceNode = (
+      <ChatWorkspace
+        conversation_id={conversation.id}
+        workspace={conversation.extra.workspace}
+        eventPrefix='remote'
+        remoteAgentId={remoteAgentId}
         messageApi={messageApi}
         teamId={teamId}
       ></ChatWorkspace>

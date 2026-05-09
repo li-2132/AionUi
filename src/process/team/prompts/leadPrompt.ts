@@ -4,7 +4,7 @@ import type { TeamAgent } from '../types';
 
 export type LeaderPromptParams = {
   teammates: TeamAgent[];
-  availableAgentTypes?: Array<{ type: string; name: string }>;
+  availableAgentTypes?: Array<{ type: string; name: string; remoteAgentId?: string }>;
   availableAssistants?: Array<{
     customAgentId: string;
     name: string;
@@ -40,7 +40,10 @@ export function buildLeaderPrompt(params: LeaderPromptParams): string {
   const availableTypesSection =
     availableAgentTypes && availableAgentTypes.length > 0
       ? `\n\n## Available Agent Types for Spawning\n${availableAgentTypes
-          .map((a) => `- \`${a.type}\` — ${a.name}`)
+          .map((a) => {
+            const remoteId = a.remoteAgentId ? ` (remote_agent_id: \`${a.remoteAgentId}\`)` : '';
+            return `- \`${a.type}\` — ${a.name}${remoteId}`;
+          })
           .join('\n')}\n\nUse \`team_list_models\` to query available models for each agent type before spawning.`
       : '';
 

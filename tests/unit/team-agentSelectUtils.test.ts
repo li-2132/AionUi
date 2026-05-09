@@ -75,7 +75,7 @@ describe('isTeamCapableBackend', () => {
   const cached = makeCachedInit(['claude', 'codex']);
 
   it('returns true for known team-capable backends regardless of cached data', () => {
-    for (const backend of ['gemini', 'claude', 'codex', 'aionrs']) {
+    for (const backend of ['gemini', 'claude', 'codex', 'aionrs', 'remote']) {
       expect(isTeamCapableBackend(backend, null)).toBe(true);
       expect(isTeamCapableBackend(backend, undefined)).toBe(true);
       expect(isTeamCapableBackend(backend, {})).toBe(true);
@@ -104,13 +104,13 @@ describe('getTeamCapableBackends', () => {
   const cached = makeCachedInit(['claude', 'codex']);
 
   it('returns only backends with cached init + gemini', () => {
-    const result = getTeamCapableBackends(['claude', 'codex', 'gemini', 'qwen'], cached);
-    expect(result).toEqual(['claude', 'codex', 'gemini']);
+    const result = getTeamCapableBackends(['claude', 'codex', 'gemini', 'remote', 'qwen'], cached);
+    expect(result).toEqual(['claude', 'codex', 'gemini', 'remote']);
   });
 
   it('returns known team-capable backends even without cached data', () => {
-    const result = getTeamCapableBackends(['claude', 'codex', 'gemini', 'qwen'], null);
-    expect(result).toEqual(['claude', 'codex', 'gemini']);
+    const result = getTeamCapableBackends(['claude', 'codex', 'gemini', 'remote', 'qwen'], null);
+    expect(result).toEqual(['claude', 'codex', 'gemini', 'remote']);
   });
 });
 
@@ -133,11 +133,12 @@ describe('filterTeamSupportedAgents', () => {
       makeAgent('claude'),
       makeAgent('gemini'),
       makeAgent('codex'),
+      makeAgent('remote'),
       makeAgent('qwen'),
       makeAgent('codebuddy'),
     ];
     const result = filterTeamSupportedAgents(agents, cached);
-    expect(result.map((a: AvailableAgent) => a.backend)).toEqual(['claude', 'gemini', 'codex']);
+    expect(result.map((a: AvailableAgent) => a.backend)).toEqual(['claude', 'gemini', 'codex', 'remote']);
   });
 
   it('uses presetAgentType over backend when available', () => {
@@ -148,9 +149,15 @@ describe('filterTeamSupportedAgents', () => {
   });
 
   it('returns known team-capable agents even without cached data', () => {
-    const agents = [makeAgent('claude'), makeAgent('gemini'), makeAgent('codex'), makeAgent('qwen')];
+    const agents = [
+      makeAgent('claude'),
+      makeAgent('gemini'),
+      makeAgent('codex'),
+      makeAgent('remote'),
+      makeAgent('qwen'),
+    ];
     const result = filterTeamSupportedAgents(agents, null);
-    expect(result.map((a: AvailableAgent) => a.backend)).toEqual(['claude', 'gemini', 'codex']);
+    expect(result.map((a: AvailableAgent) => a.backend)).toEqual(['claude', 'gemini', 'codex', 'remote']);
   });
 
   it('returns all agents when all have cached init results', () => {
@@ -170,12 +177,17 @@ describe('agentKey', () => {
   it('returns preset:: prefix for custom agents', () => {
     expect(agentKey({ backend: 'claude', customAgentId: 'my-agent' } as AvailableAgent)).toBe('preset::my-agent');
   });
+
+  it('returns remote:: prefix for remote execution engines', () => {
+    expect(agentKey({ backend: 'remote', customAgentId: 'remote-1' } as AvailableAgent)).toBe('remote::remote-1');
+  });
 });
 
 describe('agentFromKey', () => {
   const agents = [
     { backend: 'claude' } as AvailableAgent,
     { backend: 'claude', customAgentId: 'my-agent' } as AvailableAgent,
+    { backend: 'remote', customAgentId: 'remote-1' } as AvailableAgent,
   ];
 
   it('finds CLI agent by key', () => {
@@ -184,6 +196,10 @@ describe('agentFromKey', () => {
 
   it('finds preset agent by key', () => {
     expect(agentFromKey('preset::my-agent', agents)).toBe(agents[1]);
+  });
+
+  it('finds remote agent by key', () => {
+    expect(agentFromKey('remote::remote-1', agents)).toBe(agents[2]);
   });
 
   it('returns undefined for unknown key', () => {

@@ -48,6 +48,7 @@ export class TeamSession extends EventEmitter {
       mailbox: this.mailbox,
       workerTaskManager,
       teamWorkspace: team.workspace || undefined,
+      executeTeamAction: (toolName, args, fromSlotId) => this.mcpServer.executeTextToolCall(toolName, args, fromSlotId),
       onAgentRemoved: (teamId, agents) => {
         void this.repo.update(teamId, { agents, updatedAt: Date.now() });
       },

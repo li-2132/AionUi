@@ -287,14 +287,14 @@ export async function loadCliConfig({
     showMemoryUsage: argv.showMemoryUsage || argv.show_memory_usage || settings.showMemoryUsage || false,
     accessibility: settings.accessibility,
     telemetry: {
-      enabled: argv.telemetry ?? settings.telemetry?.enabled,
+      enabled: argv.telemetry ?? settings.telemetry?.enabled ?? false,
       target: (argv.telemetryTarget ?? settings.telemetry?.target) as TelemetryTarget,
       otlpEndpoint:
         argv.telemetryOtlpEndpoint ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? settings.telemetry?.otlpEndpoint,
-      logPrompts: argv.telemetryLogPrompts ?? settings.telemetry?.logPrompts,
+      logPrompts: argv.telemetryLogPrompts ?? settings.telemetry?.logPrompts ?? false,
       outfile: argv.telemetryOutfile ?? settings.telemetry?.outfile,
     },
-    usageStatisticsEnabled: settings.usageStatisticsEnabled ?? true,
+    usageStatisticsEnabled: settings.usageStatisticsEnabled ?? false,
     // Git-aware file filtering settings
     fileFiltering: {
       respectGitIgnore: settings.fileFiltering?.respectGitIgnore,

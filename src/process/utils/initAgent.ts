@@ -309,20 +309,8 @@ export const createNanobotAgent = async (options: ICreateConversationParams): Pr
 
 export const createRemoteAgent = async (options: ICreateConversationParams): Promise<TChatConversation> => {
   const { extra } = options;
-  const { workspace, customWorkspace } = await buildWorkspaceWidthFiles(
-    `remote-temp-${Date.now()}`,
-    extra.workspace,
-    extra.defaultFiles,
-    extra.customWorkspace
-  );
-
-  if (!customWorkspace) {
-    await setupAssistantWorkspace(workspace, {
-      enabledSkills: extra.enabledSkills,
-      extraSkillPaths: extra.extraSkillPaths,
-      excludeBuiltinSkills: extra.excludeBuiltinSkills,
-    });
-  }
+  const workspace = typeof extra.workspace === 'string' ? extra.workspace.trim() : '';
+  const customWorkspace = extra.customWorkspace !== undefined ? extra.customWorkspace : workspace.length > 0;
 
   return {
     type: 'remote',

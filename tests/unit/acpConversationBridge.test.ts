@@ -148,6 +148,20 @@ describe('acpConversationBridge', () => {
     expect(result.data[0].supportedTransports).toEqual(['stdio']);
   });
 
+  it('getAvailableAgents exposes remoteAgentId as customAgentId for remote team creation', async () => {
+    const { agentRegistry } = await import('../../src/process/agent/AgentRegistry');
+    vi.mocked(agentRegistry.getDetectedAgents).mockReturnValue([
+      { backend: 'remote', name: 'SSH Codex', kind: 'remote', remoteAgentId: 'remote-1' },
+    ] as any);
+
+    const { mcpService } = await import('../../src/process/services/mcpServices/McpService');
+    vi.mocked(mcpService.getSupportedTransportsForAgent).mockReturnValue([] as any);
+
+    const result = await handlers['getAvailableAgents']();
+    expect(result.success).toBe(true);
+    expect(result.data[0].customAgentId).toBe('remote-1');
+  });
+
   it('getAvailableAgents returns error when registry throws', async () => {
     const { agentRegistry } = await import('../../src/process/agent/AgentRegistry');
     vi.mocked(agentRegistry.getDetectedAgents).mockImplementation(() => {

@@ -11,6 +11,11 @@ import { ProcessConfig } from '@process/utils/initStorage';
 import type { Mailbox } from './Mailbox';
 import { buildRolePrompt } from './prompts/buildRolePrompt';
 import { formatMessages } from './prompts/formatHelpers';
+import {
+  buildRemoteTeamTextProtocolPrompt,
+  parseRemoteTeamTextActions,
+  type RemoteTeamTextAction,
+} from './prompts/remoteTextProtocol';
 import { agentRegistry } from '@process/agent/AgentRegistry';
 
 type TeammateManagerParams = {
@@ -20,6 +25,7 @@ type TeammateManagerParams = {
   workerTaskManager: IWorkerTaskManager;
   hasMcpTools?: boolean;
   teamWorkspace?: string;
+  executeTeamAction?: (toolName: string, args: Record<string, unknown>, fromSlotId?: string) => Promise<string>;
   /** Called after an agent is removed from in-memory list, so the caller can persist the change (e.g. update DB) */
   onAgentRemoved?: (teamId: string, agents: TeamAgent[]) => void;
 };
@@ -36,6 +42,11 @@ export class TeammateManager extends EventEmitter {
   private readonly onAgentRemovedFn?: (teamId: string, agents: TeamAgent[]) => void;
   /** Shared team workspace path (leader's working directory) */
   private readonly teamWorkspace: string | undefined;
+  private readonly executeTeamActionFn?: (
+    toolName: string,
+    args: Record<string, unknown>,
+    fromSlotId?: string
+  ) => Promise<string>;
 
   /** Tracks which slotIds currently have an in-progress wake to avoid loops */
   private readonly activeWakes = new Set<string>();
@@ -47,6 +58,7 @@ export class TeammateManager extends EventEmitter {
   private readonly finalizedTurns = new Set<string>();
   /** Maps slotId → original name before rename, for "formerly: X" hints in prompts */
   private readonly renamedAgents = new Map<string, string>();
+  private readonly remoteTextBuffers = new Map<string, string>();
 
   /** Maximum time (ms) to wait for a turnCompleted event before force-releasing a wake */
   private static readonly WAKE_TIMEOUT_MS = 60 * 1000;
@@ -61,6 +73,7 @@ export class TeammateManager extends EventEmitter {
     this.workerTaskManager = params.workerTaskManager;
     this.onAgentRemovedFn = params.onAgentRemoved;
     this.teamWorkspace = params.teamWorkspace;
+    this.executeTeamActionFn = params.executeTeamAction;
 
     for (const agent of this.agents) {
       this.ownedConversationIds.add(agent.conversationId);
@@ -168,7 +181,7 @@ export class TeammateManager extends EventEmitter {
       let message: string;
       if (needsFullPrompt) {
         // Compute availableAgentTypes + availableAssistants only for leader's first prompt
-        let availableAgentTypes: Array<{ type: string; name: string }> | undefined;
+        let availableAgentTypes: Array<{ type: string; name: string; remoteAgentId?: string }> | undefined;
         let availableAssistants:
           | Array<{ customAgentId: string; name: string; backend: string; description?: string; skills?: string[] }>
           | undefined;
@@ -180,6 +193,7 @@ export class TeammateManager extends EventEmitter {
             .map((a) => ({
               type: a.backend,
               name: a.name,
+              remoteAgentId: 'remoteAgentId' in a ? (a.remoteAgentId as string | undefined) : undefined,
             }));
 
           const assistants = (await ProcessConfig.get('assistants')) ?? [];
@@ -195,7 +209,7 @@ export class TeammateManager extends EventEmitter {
             .filter((a) => isTeamCapableBackend(a.backend, cachedInitResults));
         }
 
-        const staticPrompt = buildRolePrompt({
+        let staticPrompt = buildRolePrompt({
           agent,
           teammates,
           availableAgentTypes,
@@ -203,6 +217,9 @@ export class TeammateManager extends EventEmitter {
           renamedAgents: this.renamedAgents,
           teamWorkspace: this.teamWorkspace,
         });
+        if (agent.conversationType === 'remote') {
+          staticPrompt += buildRemoteTeamTextProtocolPrompt();
+        }
 
         message =
           mailboxMessages.length > 0
@@ -286,6 +303,11 @@ export class TeammateManager extends EventEmitter {
 
     const agent = this.agents.find((a) => a.conversationId === msg.conversation_id);
     if (!agent) return;
+
+    if (agent.conversationType === 'remote' && msg.type === 'content' && typeof msg.data === 'string') {
+      const previous = this.remoteTextBuffers.get(msg.conversation_id) ?? '';
+      this.remoteTextBuffers.set(msg.conversation_id, previous + msg.data);
+    }
 
     // Detect agent crash:
     // 1. AcpAgent.handleDisconnect emits finish with agentCrash flag (wrapper process dies)
@@ -413,6 +435,16 @@ export class TeammateManager extends EventEmitter {
       this.setStatus(agent.slotId, 'idle');
     }
 
+    if (agent.conversationType === 'remote') {
+      const remoteText = this.remoteTextBuffers.get(conversationId) ?? '';
+      this.remoteTextBuffers.delete(conversationId);
+      const actions = parseRemoteTeamTextActions(remoteText);
+      if (actions.length > 0) {
+        await this.executeRemoteTextActions(agent, actions);
+        return;
+      }
+    }
+
     // Auto-send idle notification to leader.
     // Must run AFTER setStatus(idle) so maybeWakeLeaderWhenAllIdle sees the updated state.
     if (agent.role !== 'leader') {
@@ -449,6 +481,35 @@ export class TeammateManager extends EventEmitter {
     if (allSettled) {
       void this.wake(leadSlotId);
     }
+  }
+
+  private async executeRemoteTextActions(agent: TeamAgent, actions: RemoteTeamTextAction[]): Promise<void> {
+    if (!this.executeTeamActionFn || actions.length === 0) return;
+
+    const results: string[] = [];
+    for (const action of actions) {
+      if (action.tool === 'invalid') {
+        results.push(`- invalid: ${String(action.args.error ?? 'Invalid action block')}`);
+        continue;
+      }
+      try {
+        const result = await this.executeTeamActionFn(action.tool, action.args, agent.slotId);
+        results.push(`- ${action.tool}: ${result}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        results.push(`- ${action.tool}: Error: ${message}`);
+      }
+    }
+
+    await this.mailbox.write({
+      teamId: this.teamId,
+      toAgentId: agent.slotId,
+      fromAgentId: 'system',
+      content:
+        `AionUi executed your remote team action block(s):\n${results.join('\n')}\n\n` +
+        'Continue from these results. Do not repeat successful actions unless you need to make a new change.',
+    });
+    await this.wake(agent.slotId);
   }
 
   /**

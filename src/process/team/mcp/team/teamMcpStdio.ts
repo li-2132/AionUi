@@ -119,6 +119,12 @@ createTeamTool(
       .describe(
         'Preset assistant ID from "Available Preset Assistants for Spawning" (e.g., "builtin-word-creator"). When set, the teammate inherits that preset\'s rules and skills; agent_type is derived from the preset.'
       ),
+    remote_agent_id: z
+      .string()
+      .optional()
+      .describe(
+        'Remote agent config ID from "Available Agent Types for Spawning". Use this with agent_type="remote" to spawn a specific SSH/WSL remote teammate.'
+      ),
     model: z
       .string()
       .optional()

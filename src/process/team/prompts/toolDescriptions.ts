@@ -14,5 +14,7 @@ Before calling this tool in the normal planning flow:
 - Do NOT call this tool in that same turn; wait for explicit approval in a later user message
 
 When calling this tool, provide the model parameter if a specific model was recommended and approved.
+For a remote teammate, set agent_type to "remote" and provide the exact remote_agent_id listed in Available Agent Types for Spawning.
+For a preset assistant, provide custom_agent_id instead of remote_agent_id.
 
 The new agent will be created and added to the team. You can then assign tasks and send messages to it.`;

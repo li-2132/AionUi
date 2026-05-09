@@ -981,6 +981,49 @@ describe('TeammateManager', () => {
       mgr.dispose();
     });
 
+    it('executes remote text action blocks and wakes the remote agent with results', async () => {
+      const executeTeamAction = vi.fn().mockResolvedValue('created');
+      const remoteLeader = makeAgent({
+        slotId: 'slot-lead',
+        conversationId: 'conv-lead',
+        role: 'leader',
+        agentName: 'Remote Leader',
+        conversationType: 'remote',
+        agentType: 'remote',
+        status: 'active',
+      });
+      const { mgr, mailbox } = makeTeammateManager([remoteLeader], { executeTeamAction });
+
+      teamEventBus.emit('responseStream', {
+        type: 'content',
+        conversation_id: 'conv-lead',
+        msg_id: 'msg-1',
+        data: 'Creating member.\n```aionui_team\n{"tool":"team_spawn_agent","args":{"name":"check","agent_type":"claude"}}\n```',
+      });
+      teamEventBus.emit('responseStream', {
+        type: 'finish',
+        conversation_id: 'conv-lead',
+        msg_id: 'msg-1',
+        data: null,
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(executeTeamAction).toHaveBeenCalledWith(
+        'team_spawn_agent',
+        { name: 'check', agent_type: 'claude' },
+        'slot-lead'
+      );
+      expect(mailbox.write).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toAgentId: 'slot-lead',
+          fromAgentId: 'system',
+          content: expect.stringContaining('team_spawn_agent: created'),
+        })
+      );
+      mgr.dispose();
+    });
+
     it('deduplicates concurrent finish events — mailbox.write called exactly once', async () => {
       const leadAgent = makeAgent({
         slotId: 'slot-lead',

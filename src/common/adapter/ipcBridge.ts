@@ -605,12 +605,57 @@ export const remoteAgent = {
   >('remote-agent.update'),
   delete: bridge.buildProvider<boolean, { id: string }>('remote-agent.delete'),
   testConnection: bridge.buildProvider<
-    { success: boolean; error?: string },
-    { url: string; authType: string; authToken?: string; allowInsecure?: boolean }
+    {
+      success: boolean;
+      error?: string;
+      status?: 'ok' | 'error' | 'host_key_approval_required';
+      fingerprint?: string;
+    },
+    {
+      protocol: import('@/common/types/detectedAgent').RemoteAgentProtocol;
+      url?: string;
+      authType?: string;
+      authToken?: string;
+      allowInsecure?: boolean;
+      connectionConfig?: import('@/common/types/detectedAgent').RemoteConnectionConfig;
+    }
   >('remote-agent.test-connection'),
   handshake: bridge.buildProvider<{ status: 'ok' | 'pending_approval' | 'error'; error?: string }, { id: string }>(
     'remote-agent.handshake'
   ),
+  listWslDistros: bridge.buildProvider<string[], void>('remote-agent.list-wsl-distros'),
+  acceptHostKey: bridge.buildProvider<boolean, { id?: string; host: string; port: number; fingerprint: string }>(
+    'remote-agent.accept-host-key'
+  ),
+};
+
+// Remote filesystem operations (browse remote workspace via WSL exec / SSH SFTP)
+export const remoteFs = {
+  list: bridge.buildProvider<
+    Array<{ name: string; path: string; isDirectory: boolean; size?: number; mtime?: number }>,
+    { agentId: string; path: string }
+  >('remote-fs.list'),
+  stat: bridge.buildProvider<
+    { name: string; path: string; isDirectory: boolean; size?: number; mtime?: number },
+    { agentId: string; path: string }
+  >('remote-fs.stat'),
+  read: bridge.buildProvider<string, { agentId: string; path: string; maxBytes?: number }>('remote-fs.read'),
+  exists: bridge.buildProvider<boolean, { agentId: string; path: string }>('remote-fs.exists'),
+};
+
+// Remote filesystem watch (long-running inotifywait stream forwarded as events)
+export const remoteWatch = {
+  start: bridge.buildProvider<
+    { ok: boolean; available: boolean; error?: string },
+    { agentId: string; rootPath: string }
+  >('remote-watch.start'),
+  stop: bridge.buildProvider<boolean, { agentId: string }>('remote-watch.stop'),
+  changes: bridge.buildEmitter<{
+    agentId: string;
+    path: string;
+    event: 'modify' | 'create' | 'delete' | 'move';
+    timestamp: number;
+  }>('remote-watch.changes'),
 };
 
 // Database operations

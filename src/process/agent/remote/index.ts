@@ -12,4 +12,7 @@ export type {
   RemoteAgentProtocol,
   RemoteAgentAuthType,
   RemoteAgentStatus,
+  RemoteConnectionConfig,
+  WslConnectionConfig,
+  SshConnectionConfig,
 } from './types';

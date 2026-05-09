@@ -7,6 +7,7 @@ import type { AcpInitializeResult } from '@/common/types/acpTypes';
 import { isTeamCapableBackend } from '@/common/types/teamTypes';
 
 export function agentKey(agent: AvailableAgent): string {
+  if (agent.backend === 'remote' && agent.customAgentId && !agent.isPreset) return `remote::${agent.customAgentId}`;
   return agent.customAgentId ? `preset::${agent.customAgentId}` : `cli::${agent.backend}`;
 }
 

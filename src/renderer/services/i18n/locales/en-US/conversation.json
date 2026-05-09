@@ -297,5 +297,15 @@
   },
   "skills": {
     "loaded": "Loaded Skills"
-  }
+  },
+  "remoteFileBrowser": {
+    "title": "Browse {{name}}",
+    "path": "Path",
+    "confirm": "Confirm",
+    "cancel": "Cancel",
+    "loading": "Loading...",
+    "error": "Cannot access this directory",
+    "empty": "No files in this directory"
+  },
+  "remoteModeBanner": "Remote mode: file change notifications require inotifywait on the remote side"
 }

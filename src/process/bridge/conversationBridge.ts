@@ -11,6 +11,7 @@ import type { IConversationService, CreateConversationParams } from '@process/se
 import type { IWorkerTaskManager } from '@process/task/IWorkerTaskManager';
 import type { TeamSessionService } from '@process/team/TeamSessionService';
 import { ipcBridge } from '@/common';
+import type { IDirOrFile } from '@/common/adapter/ipcBridge';
 import { removeFromMessageCache } from '@process/utils/message';
 import {
   getSkillsDir,
@@ -32,6 +33,9 @@ import fs from 'fs';
 import path from 'path';
 import { migrateConversationToDatabase } from './migrationUtils';
 import { ConversationSideQuestionService } from './services/ConversationSideQuestionService';
+import type { IRemoteFs } from '@process/services/remoteFs';
+import { getCachedRemoteFs } from '@process/services/remoteFs/cache';
+import { getDatabase } from '@process/services/database';
 
 const refreshTrayMenuSafely = async (): Promise<void> => {
   try {
@@ -50,6 +54,114 @@ const VALID_CONVERSATION_TYPES = new Set<TChatConversation['type']>([
   'remote',
   'aionrs',
 ]);
+
+const buildRemoteWorkspaceTree = async (
+  fs: IRemoteFs,
+  targetPath: string,
+  options: {
+    root?: string;
+    maxDepth?: number;
+    searchText?: string;
+    onSearchProcess?: (result: { file: number; dir: number; match?: IDirOrFile }) => void;
+    process?: { file: number; dir: number };
+  } = {}
+): Promise<IDirOrFile | null> => {
+  const root = options.root ?? targetPath;
+  const maxDepth = options.maxDepth ?? 1;
+  const searchText = options.searchText ?? '';
+  const process = options.process ?? { file: 0, dir: 1 };
+  const onSearchProcess = options.onSearchProcess ?? (() => {});
+  const matchSearch = searchText ? (value: string) => value.includes(searchText) : () => false;
+
+  let stat: Awaited<ReturnType<IRemoteFs['stat']>>;
+  try {
+    stat = await fs.stat(targetPath);
+  } catch {
+    return null;
+  }
+  if (!stat.isDirectory) return null;
+
+  const relativePath = targetPath === root ? '' : targetPath.slice(root.endsWith('/') ? root.length : root.length + 1);
+  const result: IDirOrFile = {
+    name: stat.name || targetPath.split('/').filter(Boolean).pop() || targetPath,
+    fullPath: targetPath,
+    relativePath,
+    isDir: true,
+    isFile: false,
+    children: [],
+  };
+  const rootMatched = matchSearch(result.name);
+  onSearchProcess({ ...process, match: rootMatched ? result : undefined });
+  if (maxDepth === 0 || rootMatched) return result;
+
+  let entries: Awaited<ReturnType<IRemoteFs['list']>>;
+  try {
+    entries = await fs.list(targetPath);
+  } catch {
+    return result;
+  }
+
+  for (const entry of entries) {
+    if (entry.name === 'node_modules') continue;
+    const entryRelativePath =
+      entry.path === root ? '' : entry.path.slice(root.endsWith('/') ? root.length : root.length + 1);
+    if (entry.isDirectory) {
+      process.dir += 1;
+      if (!searchText && maxDepth <= 1) {
+        result.children?.push({
+          name: entry.name,
+          fullPath: entry.path,
+          relativePath: entryRelativePath,
+          isDir: true,
+          isFile: false,
+        });
+        continue;
+      }
+      const child = await buildRemoteWorkspaceTree(fs, entry.path, {
+        root,
+        maxDepth: searchText ? maxDepth : maxDepth - 1,
+        searchText,
+        process,
+        onSearchProcess(searchResult) {
+          if (searchResult.match) {
+            if (!result.children?.some((item) => item.fullPath === searchResult.match?.fullPath)) {
+              result.children?.push(searchResult.match);
+            }
+            onSearchProcess({ ...process, match: result });
+          }
+        },
+      });
+      if (child && !searchText) {
+        result.children?.push(child);
+      }
+    } else {
+      const child: IDirOrFile = {
+        name: entry.name,
+        fullPath: entry.path,
+        relativePath: entryRelativePath,
+        isDir: false,
+        isFile: true,
+      };
+      if (!searchText) {
+        result.children?.push(child);
+        continue;
+      }
+      const childMatched = matchSearch(child.name);
+      if (childMatched) {
+        result.children?.push(child);
+      }
+      process.file += 1;
+      onSearchProcess({ ...process, match: childMatched ? result : undefined });
+    }
+  }
+
+  result.children?.sort((a, b) => {
+    if (a.isDir && !b.isDir) return -1;
+    if (!a.isDir && b.isDir) return 1;
+    return a.name.localeCompare(b.name);
+  });
+  return result;
+};
 
 export function initConversationBridge(
   conversationService: IConversationService,
@@ -406,8 +518,31 @@ export function initConversationBridge(
     };
   })();
 
-  ipcBridge.conversation.getWorkspace.provider(async ({ workspace, search, path }) => {
+  ipcBridge.conversation.getWorkspace.provider(async ({ conversation_id, workspace, search, path }) => {
     try {
+      const conversation = await conversationService.getConversation(conversation_id);
+      const remoteAgentId =
+        conversation?.type === 'remote'
+          ? (conversation.extra as { remoteAgentId?: string } | undefined)?.remoteAgentId
+          : undefined;
+      if (remoteAgentId) {
+        const remoteFs = await getCachedRemoteFs(remoteAgentId);
+        const root = workspace;
+        const targetPath = path || workspace;
+        const res = await buildRemoteWorkspaceTree(remoteFs, targetPath, {
+          root,
+          // SSH/SFTP and WSL exec are much more expensive than local fs.
+          // Load one level for the tree and let the renderer lazy-load
+          // children via `loadMore`; only search walks deeper.
+          maxDepth: search ? 10 : 1,
+          searchText: search,
+          onSearchProcess(result) {
+            void ipcBridge.conversation.responseSearchWorkSpace.invoke(result);
+          },
+        });
+        return res ? [res] : [];
+      }
+
       const fileService = GeminiAgent.buildFileServer(workspace);
       return await readDirectoryRecursive(path, {
         root: workspace,

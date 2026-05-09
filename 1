@@ -1,0 +1,12 @@
+ssh -p 8004 tangxuan@121.199.73.32 'bash -c '"'"'
+  export NVM_DIR="${NVM_DIR:-$HOME/.nvm}";
+  for f in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.bashrc" "$HOME/.aionui-env" "$HOME/.config/aionui/env" "$NVM_DIR/nvm.sh"; do
+    [ -r "$f" ] && . "$f" >/dev/null 2>&1 || true
+  done
+  for d in "$HOME/.local/bin" "$HOME/.npm-global/bin" "$HOME/.bun/bin" "$NVM_DIR"/versions/node/*/bin; do
+    [ -d "$d" ] && PATH="$d:$PATH"
+  done
+  export PATH
+  printf "KEY_LEN=%s\nBASE_URL=%s\nCLAUDE=%s\n" "${#ANTHROPIC_API_KEY}" "${ANTHROPIC_BASE_URL:-<empty>}" "$(command -v claude || true)"
+  printf "hi" | claude -p --output-format=stream-json --verbose --dangerously-skip-permissions
+  '"'"

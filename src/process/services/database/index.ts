@@ -34,7 +34,7 @@ import type {
   PluginStatus,
 } from '@process/channels/types';
 import type { ConversationSource, TProviderWithModel } from '@/common/config/storage';
-import type { RemoteAgentConfig, RemoteAgentStatus } from '@process/agent/remote';
+import type { RemoteAgentConfig, RemoteAgentStatus, RemoteConnectionConfig } from '@process/agent/remote';
 import { rowToChannelUser, rowToChannelSession, rowToPairingRequest } from '@process/channels/types';
 import {
   encryptCredentials,
@@ -51,6 +51,15 @@ type IConversationMessageSearchRow = IConversationRow & {
 };
 
 const escapeLikePattern = (value: string): string => value.replace(/[\\%_]/g, (match) => `\\${match}`);
+
+const parseConnectionConfig = (raw: string | null): RemoteConnectionConfig | undefined => {
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as RemoteConnectionConfig;
+  } catch {
+    return undefined;
+  }
+};
 
 const NATIVE_MODULE_LOAD_ERROR_PATTERNS = ['NODE_MODULE_VERSION', 'was compiled against', 'dlopen'];
 
@@ -1508,6 +1517,7 @@ export class AionUIDatabase {
         device_private_key: string | null;
         device_token: string | null;
         allow_insecure: number | null;
+        connection_config: string | null;
         status: string | null;
         last_connected_at: number | null;
         created_at: number;
@@ -1528,6 +1538,7 @@ export class AionUIDatabase {
         devicePublicKey: row.device_public_key ? decryptString(row.device_public_key) : undefined,
         devicePrivateKey: row.device_private_key ? decryptString(row.device_private_key) : undefined,
         deviceToken: row.device_token ? decryptString(row.device_token) : undefined,
+        connectionConfig: parseConnectionConfig(row.connection_config),
         status: (row.status as RemoteAgentStatus) ?? 'unknown',
         lastConnectedAt: row.last_connected_at ?? undefined,
         createdAt: row.created_at,
@@ -1556,6 +1567,7 @@ export class AionUIDatabase {
             device_private_key: string | null;
             device_token: string | null;
             allow_insecure: number | null;
+            connection_config: string | null;
             status: string | null;
             last_connected_at: number | null;
             created_at: number;
@@ -1579,6 +1591,7 @@ export class AionUIDatabase {
         devicePublicKey: row.device_public_key ? decryptString(row.device_public_key) : undefined,
         devicePrivateKey: row.device_private_key ? decryptString(row.device_private_key) : undefined,
         deviceToken: row.device_token ? decryptString(row.device_token) : undefined,
+        connectionConfig: parseConnectionConfig(row.connection_config),
         status: (row.status as RemoteAgentStatus) ?? 'unknown',
         lastConnectedAt: row.last_connected_at ?? undefined,
         createdAt: row.created_at,
@@ -1594,8 +1607,8 @@ export class AionUIDatabase {
     try {
       this.db
         .prepare(
-          `INSERT INTO remote_agents (id, name, protocol, url, auth_type, auth_token, allow_insecure, avatar, description, device_id, device_public_key, device_private_key, device_token, status, last_connected_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO remote_agents (id, name, protocol, url, auth_type, auth_token, allow_insecure, avatar, description, device_id, device_public_key, device_private_key, device_token, connection_config, status, last_connected_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           config.id,
@@ -1611,6 +1624,7 @@ export class AionUIDatabase {
           config.devicePublicKey ? encryptString(config.devicePublicKey) : null,
           config.devicePrivateKey ? encryptString(config.devicePrivateKey) : null,
           config.deviceToken ? encryptString(config.deviceToken) : null,
+          config.connectionConfig ? JSON.stringify(config.connectionConfig) : null,
           config.status ?? 'unknown',
           config.lastConnectedAt ?? null,
           config.createdAt,
@@ -1637,6 +1651,7 @@ export class AionUIDatabase {
       device_private_key: string;
       device_token: string;
       allow_insecure: number;
+      connection_config: string;
       status: string;
       last_connected_at: number;
     }>

@@ -23,6 +23,7 @@ const capturedCoreConfig = vi.hoisted(() => ({
   onStreamEvent: null as ((msg: IResponseMessage) => void) | null,
   onSignalEvent: null as ((msg: IResponseMessage) => void) | null,
   onSessionKeyUpdate: null as ((key: string) => void) | null,
+  remoteConfig: null as Record<string, unknown> | null,
 }));
 
 const mockDb = vi.hoisted(() => ({
@@ -62,6 +63,7 @@ vi.mock('../../src/process/agent/remote', () => {
         capturedCoreConfig.onSignalEvent = config.onSignalEvent as typeof capturedCoreConfig.onSignalEvent;
         capturedCoreConfig.onSessionKeyUpdate =
           config.onSessionKeyUpdate as typeof capturedCoreConfig.onSessionKeyUpdate;
+        capturedCoreConfig.remoteConfig = config.remoteConfig as Record<string, unknown>;
         Object.assign(this, mockCore);
       }
     },
@@ -171,6 +173,7 @@ describe('RemoteAgentManager', () => {
     capturedCoreConfig.onStreamEvent = null;
     capturedCoreConfig.onSignalEvent = null;
     capturedCoreConfig.onSessionKeyUpdate = null;
+    capturedCoreConfig.remoteConfig = null;
   });
 
   describe('constructor and bootstrap', () => {
@@ -180,6 +183,66 @@ describe('RemoteAgentManager', () => {
 
       expect(mockDb.getRemoteAgent).toHaveBeenCalledWith('agent-1');
       expect(mockCore.start).toHaveBeenCalled();
+    });
+
+    it('overrides SSH remote working directory with the conversation workspace', async () => {
+      mockDb.getRemoteAgent.mockReturnValueOnce({
+        id: 'agent-1',
+        name: 'SSH Codex',
+        protocol: 'ssh',
+        url: 'ssh://host',
+        authType: 'none',
+        createdAt: 0,
+        updatedAt: 0,
+        connectionConfig: {
+          host: 'host',
+          port: 22,
+          username: 'xuan',
+          privateKeyPath: '/home/xuan/.ssh/id_rsa',
+          cliCommand: 'codex',
+          workingDir: '/home/xuan',
+        },
+      });
+      const mgr = createManager({ workspace: '/home/xuan/project' });
+      await mgr.bootstrap;
+
+      expect(capturedCoreConfig.remoteConfig).toEqual(
+        expect.objectContaining({
+          connectionConfig: expect.objectContaining({
+            workingDir: '/home/xuan/project',
+          }),
+        })
+      );
+    });
+
+    it('ignores legacy local remote-temp workspaces for SSH remotes', async () => {
+      mockDb.getRemoteAgent.mockReturnValueOnce({
+        id: 'agent-1',
+        name: 'SSH Codex',
+        protocol: 'ssh',
+        url: 'ssh://host',
+        authType: 'none',
+        createdAt: 0,
+        updatedAt: 0,
+        connectionConfig: {
+          host: 'host',
+          port: 22,
+          username: 'xuan',
+          privateKeyPath: '/home/xuan/.ssh/id_rsa',
+          cliCommand: 'codex',
+          workingDir: '/home/xuan',
+        },
+      });
+      const mgr = createManager({ workspace: '/home/xuan/.config/AionUi-Dev/aionui/remote-temp-1778314554411' });
+      await mgr.bootstrap;
+
+      expect(capturedCoreConfig.remoteConfig).toEqual(
+        expect.objectContaining({
+          connectionConfig: expect.objectContaining({
+            workingDir: '/home/xuan',
+          }),
+        })
+      );
     });
 
     it('throws when remote agent config not found', async () => {

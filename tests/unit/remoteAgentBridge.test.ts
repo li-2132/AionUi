@@ -51,6 +51,8 @@ vi.mock('../../src/common', () => {
         delete: makeChannel('delete'),
         testConnection: makeChannel('testConnection'),
         handshake: makeChannel('handshake'),
+        listWslDistros: makeChannel('listWslDistros'),
+        acceptHostKey: makeChannel('acceptHostKey'),
       },
     },
   };
@@ -271,16 +273,16 @@ describe('remoteAgentBridge', () => {
   describe('testConnection provider', () => {
     it('returns success on WebSocket open', async () => {
       const handler = providerMap.get('testConnection')!;
-      const result = await handler({ url: 'wss://test', authType: 'none' });
-      expect(result).toEqual({ success: true });
+      const result = await handler({ protocol: 'openclaw', url: 'wss://test', authType: 'none' });
+      expect(result).toEqual({ success: true, status: 'ok' });
     });
 
     it('normalizes urls without protocol prefix', async () => {
       const handler = providerMap.get('testConnection')!;
 
-      const result = await handler({ url: '127.0.0.1:42617', authType: 'none' });
+      const result = await handler({ protocol: 'openclaw', url: '127.0.0.1:42617', authType: 'none' });
 
-      expect(result).toEqual({ success: true });
+      expect(result).toEqual({ success: true, status: 'ok' });
       expect(mockWebSocketState.lastUrl).toBe('ws://127.0.0.1:42617/');
     });
 
@@ -288,28 +290,28 @@ describe('remoteAgentBridge', () => {
       const handler = providerMap.get('testConnection')!;
       mockWebSocketState.throwOnUrl = 'invalid-endpoint';
 
-      const result = await handler({ url: 'invalid-endpoint', authType: 'none' });
+      const result = await handler({ protocol: 'openclaw', url: 'invalid-endpoint', authType: 'none' });
 
-      expect(result).toEqual({ success: false, error: 'Invalid URL' });
+      expect(result).toEqual({ success: false, status: 'error', error: 'Invalid URL' });
       expect(mockWebSocketState.lastUrl).toBe('ws://invalid-endpoint/');
     });
 
     it('rejects URLs with disallowed protocols (http://)', async () => {
       const handler = providerMap.get('testConnection')!;
-      const result = await handler({ url: 'http://example.com', authType: 'none' });
-      expect(result).toEqual({ success: false, error: 'Unsupported protocol: http:' });
+      const result = await handler({ protocol: 'openclaw', url: 'http://example.com', authType: 'none' });
+      expect(result).toEqual({ success: false, status: 'error', error: 'Unsupported protocol: http:' });
     });
 
     it('rejects URLs with disallowed protocols (file://)', async () => {
       const handler = providerMap.get('testConnection')!;
-      const result = await handler({ url: 'file:///etc/passwd', authType: 'none' });
-      expect(result).toEqual({ success: false, error: 'Unsupported protocol: file:' });
+      const result = await handler({ protocol: 'openclaw', url: 'file:///etc/passwd', authType: 'none' });
+      expect(result).toEqual({ success: false, status: 'error', error: 'Unsupported protocol: file:' });
     });
 
     it('rejects invalid URL formats', async () => {
       const handler = providerMap.get('testConnection')!;
-      const result = await handler({ url: 'ws://[invalid', authType: 'none' });
-      expect(result).toEqual({ success: false, error: 'Invalid URL' });
+      const result = await handler({ protocol: 'openclaw', url: 'ws://[invalid', authType: 'none' });
+      expect(result).toEqual({ success: false, status: 'error', error: 'Invalid URL' });
     });
   });
 

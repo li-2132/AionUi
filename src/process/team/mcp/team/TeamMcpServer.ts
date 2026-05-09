@@ -276,6 +276,10 @@ export class TeamMcpServer {
     }
   }
 
+  async executeTextToolCall(toolName: string, args: Record<string, unknown>, fromSlotId?: string): Promise<string> {
+    return this.handleToolCall(toolName, args, fromSlotId);
+  }
+
   // ── Tool handlers (logic preserved from original registerTools) ─────────────
 
   private async handleSendMessage(args: Record<string, unknown>, callerSlotId?: string): Promise<string> {
@@ -374,8 +378,18 @@ export class TeamMcpServer {
     const { teamId, getAgents, mailbox, spawnAgent } = this.params;
     const name = String(args.name ?? '');
     const customAgentId = args.custom_agent_id ? String(args.custom_agent_id) : undefined;
+    const remoteAgentId = args.remote_agent_id ? String(args.remote_agent_id) : undefined;
     const model = args.model ? String(args.model) : undefined;
     let agentType = args.agent_type ? String(args.agent_type) : undefined;
+
+    if (remoteAgentId) {
+      if (customAgentId) {
+        throw new Error(
+          'Use either custom_agent_id for preset assistants or remote_agent_id for remote agents, not both.'
+        );
+      }
+      agentType = 'remote';
+    }
 
     // When a preset is requested, resolve its backend from config so the caller
     // does not need to specify agent_type separately.
@@ -417,6 +431,22 @@ export class TeamMcpServer {
       }
     }
 
+    if (remoteAgentId) {
+      const remoteAgents = agentRegistry.getDetectedAgents().filter((agent) => agent.backend === 'remote');
+      const found = remoteAgents.some(
+        (agent) => 'remoteAgentId' in agent && (agent.remoteAgentId as string | undefined) === remoteAgentId
+      );
+      if (!found) {
+        const available = remoteAgents
+          .map((agent) => ('remoteAgentId' in agent ? (agent.remoteAgentId as string | undefined) : undefined))
+          .filter(Boolean)
+          .join(', ');
+        throw new Error(
+          `Remote agent "${remoteAgentId}" not found.${available ? ` Available remote_agent_id values: ${available}.` : ''}`
+        );
+      }
+    }
+
     if (model && agentType) {
       const cachedModels = await ProcessConfig.get('acp.cachedModels');
       const available = cachedModels?.[agentType]?.availableModels;
@@ -432,7 +462,7 @@ export class TeamMcpServer {
       throw new Error('Agent spawning is not available for this team.');
     }
 
-    const newAgent = await spawnAgent(name, agentType, model, customAgentId);
+    const newAgent = await spawnAgent(name, agentType, model, remoteAgentId || customAgentId);
     const agents = getAgents();
     const fromAgent =
       (callerSlotId && agents.find((a) => a.slotId === callerSlotId)) ??

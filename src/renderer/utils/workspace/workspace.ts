@@ -70,3 +70,23 @@ export const getLastDirectoryName = (path: string): string => {
   const parts = splitPathSegments(path);
   return parts[parts.length - 1] || path;
 };
+
+/**
+ * Reference to either a local working directory or a remote one bound to a
+ * specific remote agent (WSL distro / SSH host). Renderer code that wants to
+ * pop a directory picker should branch on this discriminator.
+ */
+export type WorkspaceRef = { type: 'local'; path: string } | { type: 'remote'; agentId: string; path: string };
+
+export const isRemoteWorkspace = (ref: WorkspaceRef): ref is Extract<WorkspaceRef, { type: 'remote' }> =>
+  ref.type === 'remote';
+
+/**
+ * Format a WorkspaceRef for display in headers / breadcrumbs.
+ *
+ * @param agentName - Optional pretty name for remote agent (falls back to "Remote").
+ */
+export const formatWorkspaceLabel = (ref: WorkspaceRef, agentName?: string): string => {
+  if (ref.type === 'remote') return `${agentName ?? 'Remote'}: ${ref.path}`;
+  return getLastDirectoryName(ref.path);
+};

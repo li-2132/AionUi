@@ -81,9 +81,19 @@ describe('configureConsoleLog', () => {
   it('redirects main-process console to electron-log functions', async () => {
     await import('@process/utils/configureConsoleLog');
 
-    // After import, console.log should be replaced by electron-log's function
-    expect(console.log).toBe(mockLog.functions.log);
-    expect(console.warn).toBe(mockLog.functions.warn);
-    expect(console.error).toBe(mockLog.functions.error);
+    console.log('Loaded cached credentials. user@example.com', 'access_token=secret-token');
+    console.warn('refresh_token: another-secret');
+    console.error(new Error('id_token=jwt-secret'));
+
+    expect(mockLog.functions.log).toHaveBeenCalledWith(
+      'Loaded cached credentials. [EMAIL_REDACTED]',
+      'access_token=[REDACTED]'
+    );
+    expect(mockLog.functions.warn).toHaveBeenCalledWith('refresh_token: [REDACTED]');
+    expect(mockLog.functions.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'id_token=[REDACTED]',
+      })
+    );
   });
 });

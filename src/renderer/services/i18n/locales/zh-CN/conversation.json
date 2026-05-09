@@ -297,5 +297,15 @@
   },
   "skills": {
     "loaded": "已加载技能"
-  }
+  },
+  "remoteFileBrowser": {
+    "title": "浏览 {{name}}",
+    "path": "路径",
+    "confirm": "确认",
+    "cancel": "取消",
+    "loading": "加载中...",
+    "error": "无法访问此目录",
+    "empty": "此目录为空"
+  },
+  "remoteModeBanner": "远程模式：文件变更通知需要远端安装 inotifywait"
 }

@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Form, Input, Message } from '@arco-design/web-react';
 import type { RefInputType } from '@arco-design/web-react/es/Input/interface';
-import { Close } from '@icon-park/react';
+import { Close, FolderOpen } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
+import useSWR from 'swr';
 import { ipcBridge } from '@/common';
 import { ConfigStorage } from '@/common/config/storage';
 import type { AcpInitializeResult } from '@/common/types/acpTypes';
@@ -12,6 +13,7 @@ import { useConversationAgents } from '@renderer/pages/conversation/hooks/useCon
 import AionModal from '@renderer/components/base/AionModal';
 import AionSelect from '@renderer/components/base/AionSelect';
 import { WorkspaceFolderSelect } from '@renderer/components/workspace';
+import RemoteFileBrowserModal from '@renderer/components/file/RemoteFileBrowserModal';
 import {
   agentKey,
   agentFromKey,
@@ -40,6 +42,7 @@ const TeamCreateModal: React.FC<Props> = ({ visible, onClose, onCreated }) => {
   const [loading, setLoading] = useState(false);
   const nameInputRef = useRef<RefInputType | null>(null);
   const [cachedInitResults, setCachedInitResults] = useState<Record<string, AcpInitializeResult> | null>(null);
+  const [remoteBrowserVisible, setRemoteBrowserVisible] = useState(false);
 
   useEffect(() => {
     if (!visible) return;
@@ -55,6 +58,15 @@ const TeamCreateModal: React.FC<Props> = ({ visible, onClose, onCreated }) => {
   }, [visible]);
 
   const allAgents = filterTeamSupportedAgents([...cliAgents, ...presetAssistants], cachedInitResults);
+  const dispatchAgent = dispatchAgentKey ? agentFromKey(dispatchAgentKey, allAgents) : undefined;
+  const remoteAgentId =
+    dispatchAgent?.backend === 'remote' && dispatchAgent.customAgentId && !dispatchAgent.isPreset
+      ? dispatchAgent.customAgentId
+      : null;
+  const { data: remoteAgent } = useSWR(remoteAgentId ? ['remote-agent.get', remoteAgentId] : null, ([, id]) =>
+    ipcBridge.remoteAgent.get.invoke({ id })
+  );
+  const isRemoteFsAgent = remoteAgent?.protocol === 'wsl' || remoteAgent?.protocol === 'ssh';
 
   const { supportedCliAgents, supportedPresetAssistants } = useMemo(() => {
     const supportedKeys = new Set(allAgents.map(agentKey));
@@ -70,10 +82,16 @@ const TeamCreateModal: React.FC<Props> = ({ visible, onClose, onCreated }) => {
     }
   }, [visible]);
 
+  useEffect(() => {
+    setWorkspace('');
+    setRemoteBrowserVisible(false);
+  }, [dispatchAgentKey]);
+
   const handleClose = () => {
     setName('');
     setDispatchAgentKey(undefined);
     setWorkspace('');
+    setRemoteBrowserVisible(false);
     onClose();
   };
 
@@ -92,7 +110,6 @@ const TeamCreateModal: React.FC<Props> = ({ visible, onClose, onCreated }) => {
     try {
       const agents: TeamAgent[] = [];
 
-      const dispatchAgent = dispatchAgentKey ? agentFromKey(dispatchAgentKey, allAgents) : undefined;
       const dispatchAgentType = resolveTeamAgentType(dispatchAgent, 'acp');
       agents.push({
         slotId: '',
@@ -266,18 +283,81 @@ const TeamCreateModal: React.FC<Props> = ({ visible, onClose, onCreated }) => {
               </>
             }
           >
-            <WorkspaceFolderSelect
-              value={workspace}
-              onChange={setWorkspace}
-              placeholder={t('team.create.selectFolder', { defaultValue: 'Select folder' })}
-              inputPlaceholder={t('team.create.workspacePlaceholder', { defaultValue: 'Workspace path (optional)' })}
-              recentLabel={t('team.create.recentLabel', { defaultValue: 'Recent' })}
-              chooseDifferentLabel={t('team.create.chooseDifferentFolder', {
-                defaultValue: 'Choose a different folder',
-              })}
-              triggerTestId='team-create-workspace-trigger'
-              menuTestId='team-create-workspace-menu'
-            />
+            {remoteAgentId ? (
+              <>
+                {isRemoteFsAgent && remoteAgent ? (
+                  <div
+                    data-testid='team-create-remote-workspace-trigger'
+                    onClick={() => setRemoteBrowserVisible(true)}
+                    className='flex min-h-44px cursor-pointer items-center gap-10px rounded-10px border border-border-2 bg-fill-1 px-12px py-0 transition-all hover:border-border-1 hover:bg-fill-2'
+                  >
+                    <FolderOpen theme='outline' size='16' fill='currentColor' className='shrink-0 text-t-secondary' />
+                    <div className='min-w-0 flex-1'>
+                      {workspace ? (
+                        <div className='flex flex-col'>
+                          <span className='text-sm leading-20px text-t-primary'>
+                            {workspace.split('/').filter(Boolean).pop() || workspace}
+                          </span>
+                          <span className='truncate text-11px leading-16px text-t-tertiary'>{workspace}</span>
+                        </div>
+                      ) : (
+                        <span className='text-sm text-t-secondary'>
+                          {t('team.create.selectFolder', { defaultValue: 'Select folder' })}
+                        </span>
+                      )}
+                    </div>
+                    {workspace && (
+                      <Close
+                        theme='outline'
+                        size='14'
+                        fill='currentColor'
+                        className='shrink-0 text-t-secondary transition-colors hover:text-t-primary'
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setWorkspace('');
+                        }}
+                      />
+                    )}
+                  </div>
+                ) : (
+                  <Input
+                    value={workspace}
+                    onChange={setWorkspace}
+                    placeholder={t('team.create.workspacePlaceholder', {
+                      defaultValue: 'Workspace path (optional)',
+                    })}
+                  />
+                )}
+                {isRemoteFsAgent && remoteAgent && (
+                  <RemoteFileBrowserModal
+                    visible={remoteBrowserVisible}
+                    agentId={remoteAgentId}
+                    agent={remoteAgent}
+                    mode='directory'
+                    initialPath={workspace || remoteAgent.connectionConfig?.workingDir}
+                    modalZIndex={10020}
+                    onConfirm={(path) => {
+                      setRemoteBrowserVisible(false);
+                      setWorkspace(path);
+                    }}
+                    onCancel={() => setRemoteBrowserVisible(false)}
+                  />
+                )}
+              </>
+            ) : (
+              <WorkspaceFolderSelect
+                value={workspace}
+                onChange={setWorkspace}
+                placeholder={t('team.create.selectFolder', { defaultValue: 'Select folder' })}
+                inputPlaceholder={t('team.create.workspacePlaceholder', { defaultValue: 'Workspace path (optional)' })}
+                recentLabel={t('team.create.recentLabel', { defaultValue: 'Recent' })}
+                chooseDifferentLabel={t('team.create.chooseDifferentFolder', {
+                  defaultValue: 'Choose a different folder',
+                })}
+                triggerTestId='team-create-workspace-trigger'
+                menuTestId='team-create-workspace-menu'
+              />
+            )}
           </FormItem>
         </Form>
       </div>

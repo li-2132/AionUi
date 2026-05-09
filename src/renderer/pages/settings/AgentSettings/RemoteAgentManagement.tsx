@@ -6,8 +6,20 @@
 
 import { ipcBridge } from '@/common';
 import type { RemoteAgentConfig, RemoteAgentInput } from '@process/agent/remote/types';
+import type {
+  RemoteAgentProtocol,
+  RemoteConnectionConfig,
+  WslConnectionConfig,
+  SshConnectionConfig,
+} from '@/common/types/detectedAgent';
+import { isWslConfig, isSshConfig } from '@/common/types/detectedAgent';
 import EmojiPicker from '@/renderer/components/chat/EmojiPicker';
 import { openExternalUrl } from '@/renderer/utils/platform';
+import ProtocolPicker from './components/ProtocolPicker';
+import WslFields from './components/WslFields';
+import SshFields from './components/SshFields';
+import HostKeyConfirmModal from './components/HostKeyConfirmModal';
+import TestConnectionStatus, { type TestStep } from './components/TestConnectionStatus';
 import {
   Avatar,
   Button,
@@ -70,10 +82,12 @@ const RemoteAgentFormModal: React.FC<{
   const [form] = Form.useForm<RemoteAgentInput>();
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [activeProtocol, setActiveProtocol] = useState<string>('openclaw');
+  const [activeProtocol, setActiveProtocol] = useState<RemoteAgentProtocol>('openclaw');
   const [avatar, setAvatar] = useState<string>('\u{1F916}');
   const [pairingState, setPairingState] = useState<PairingState>('idle');
   const [pairingTimeLeft, setPairingTimeLeft] = useState(0);
+  const [testStatus, setTestStatus] = useState<TestStep>('');
+  const [hostKeyInfo, setHostKeyInfo] = useState<{ id?: string; fingerprint: string } | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval>>(undefined);
   const countdownRef = useRef<ReturnType<typeof setInterval>>(undefined);
   const savedAgentIdRef = useRef<string>(undefined);
@@ -128,42 +142,127 @@ const RemoteAgentFormModal: React.FC<{
     [stopPolling, onSaved, onClose, t]
   );
 
+  const buildConnectionConfig = useCallback(
+    (values: Record<string, unknown>): RemoteConnectionConfig | undefined => {
+      if (activeProtocol === 'wsl') {
+        const distro = values.wsl_distro as string | undefined;
+        const cliCommand = values.wsl_cliCommand as string | undefined;
+        if (!distro || !cliCommand) return undefined;
+        const extraArgsRaw = (values.wsl_extraArgs as string | undefined) ?? '';
+        const cliArgs = extraArgsRaw
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const cfg: WslConnectionConfig = {
+          distro,
+          cliCommand,
+          customCliPath: (values.wsl_customCliPath as string | undefined) || undefined,
+          cliArgs,
+          workingDir: (values.wsl_workingDir as string | undefined) || undefined,
+          transportMode: ((values.wsl_transportMode as string | undefined) ?? 'stream-json') as WslConnectionConfig['transportMode'],
+        };
+        return cfg;
+      }
+      if (activeProtocol === 'ssh') {
+        const host = values.ssh_host as string | undefined;
+        const username = values.ssh_username as string | undefined;
+        const privateKeyPath = values.ssh_privateKeyPath as string | undefined;
+        const cliCommand = values.ssh_cliCommand as string | undefined;
+        if (!host || !username || !privateKeyPath || !cliCommand) return undefined;
+        const extraArgsRaw = (values.ssh_extraArgs as string | undefined) ?? '';
+        const cliArgs = extraArgsRaw
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const cfg: SshConnectionConfig = {
+          host,
+          port: Number(values.ssh_port ?? 22),
+          username,
+          privateKeyPath,
+          // Plaintext — bridge will encrypt at the trust boundary. Never sent
+          // to or persisted at the renderer.
+          passphrase: (values.ssh_passphrase as string | undefined) || undefined,
+          cliCommand,
+          customCliPath: (values.ssh_customCliPath as string | undefined) || undefined,
+          cliArgs,
+          workingDir: (values.ssh_workingDir as string | undefined) || undefined,
+          transportMode: ((values.ssh_transportMode as string | undefined) ?? 'stream-json') as SshConnectionConfig['transportMode'],
+        };
+        return cfg;
+      }
+      return undefined;
+    },
+    [activeProtocol]
+  );
+
   const handleTestConnection = useCallback(async () => {
-    const values = form.getFieldsValue(['url', 'authType', 'authToken', 'allowInsecure']) as {
-      url?: string;
-      authType?: string;
-      authToken?: string;
-      allowInsecure?: boolean;
-    };
-    if (!values.url) {
+    const values = form.getFieldsValue() as Record<string, unknown>;
+    if (activeProtocol === 'openclaw' && !values.url) {
       Message.warning(t('settings.remoteAgent.urlRequired'));
       return;
     }
     setTesting(true);
+    setTestStatus(activeProtocol === 'wsl' ? 'detectingWsl' : activeProtocol === 'ssh' ? 'connecting' : '');
     try {
+      const connectionConfig = buildConnectionConfig(values);
       const result = await ipcBridge.remoteAgent.testConnection.invoke({
-        url: values.url,
-        authType: values.authType || 'none',
-        authToken: values.authToken,
-        allowInsecure: values.allowInsecure,
+        protocol: activeProtocol,
+        url: values.url as string | undefined,
+        authType: (values.authType as string | undefined) ?? 'none',
+        authToken: values.authToken as string | undefined,
+        allowInsecure: values.allowInsecure as boolean | undefined,
+        connectionConfig,
       });
-      if (result.success) {
+      if (result.status === 'host_key_approval_required' && result.fingerprint) {
+        setHostKeyInfo({ fingerprint: result.fingerprint });
+        setTestStatus('');
+      } else if (result.success) {
         Message.success(t('settings.remoteAgent.testSuccess'));
+        setTestStatus('ready');
       } else {
         Message.error(t('settings.remoteAgent.testFailed', { error: result.error }));
+        setTestStatus('');
       }
     } catch (error) {
       Message.error(t('settings.remoteAgent.testError', { error: String(error) }));
+      setTestStatus('');
     } finally {
       setTesting(false);
     }
-  }, [form, t]);
+  }, [form, t, activeProtocol, buildConnectionConfig]);
+
+  const handleHostKeyConfirm = useCallback(async () => {
+    if (!hostKeyInfo) return;
+    const sshHost = (form.getFieldsValue() as Record<string, unknown>).ssh_host as string | undefined;
+    const sshPort = Number((form.getFieldsValue() as Record<string, unknown>).ssh_port ?? 22);
+    if (sshHost) {
+      await ipcBridge.remoteAgent.acceptHostKey.invoke({
+        id: savedAgentIdRef.current,
+        host: sshHost,
+        port: sshPort,
+        fingerprint: hostKeyInfo.fingerprint,
+      });
+    }
+    setHostKeyInfo(null);
+    handleTestConnection();
+  }, [hostKeyInfo, handleTestConnection, form]);
 
   const handleSave = useCallback(async () => {
     try {
-      const values = await form.validate();
+      const values = (await form.validate()) as Record<string, unknown>;
       setSaving(true);
-      const payload: RemoteAgentInput = { ...values, protocol: activeProtocol as RemoteAgentInput['protocol'], avatar };
+
+      const connectionConfig = buildConnectionConfig(values);
+      const payload: RemoteAgentInput = {
+        name: values.name as string,
+        protocol: activeProtocol,
+        url: (values.url as string | undefined) ?? '',
+        authType: ((values.authType as string | undefined) ?? 'none') as RemoteAgentInput['authType'],
+        authToken: values.authToken as string | undefined,
+        allowInsecure: values.allowInsecure as boolean | undefined,
+        connectionConfig,
+        avatar,
+      };
 
       let agentId: string;
       if (editAgent) {
@@ -186,7 +285,7 @@ const RemoteAgentFormModal: React.FC<{
           onClose();
         } else if (result.status === 'pending_approval') {
           startPairingPoll(agentId);
-          onSaved(); // refresh list to show 'pending' status
+          onSaved();
         } else {
           Message.warning(
             `${editAgent ? t('settings.remoteAgent.updated') : t('settings.remoteAgent.created')} — ${result.error || 'Handshake failed'}`
@@ -199,12 +298,17 @@ const RemoteAgentFormModal: React.FC<{
         onSaved();
         onClose();
       }
-    } catch {
-      // validation error or API error
+    } catch (err) {
+      // Validation errors come back as a record without a `message`; only show
+      // a banner for actual API/runtime failures so the user can act on them.
+      const message = err instanceof Error ? err.message : '';
+      if (message) {
+        Message.error(message);
+      }
     } finally {
       setSaving(false);
     }
-  }, [form, editAgent, activeProtocol, avatar, onSaved, onClose, startPairingPoll, t]);
+  }, [form, editAgent, activeProtocol, avatar, onSaved, onClose, startPairingPoll, t, buildConnectionConfig]);
 
   const handleCancelPairing = useCallback(() => {
     stopPolling();
@@ -286,21 +390,48 @@ const RemoteAgentFormModal: React.FC<{
         if (editAgent) {
           setActiveProtocol(editAgent.protocol);
           setAvatar(editAgent.avatar || '\u{1F916}');
-          form.setFieldsValue({
+          const baseValues: Record<string, unknown> = {
             name: editAgent.name,
             url: editAgent.url,
             authType: editAgent.authType,
             authToken: editAgent.authToken,
             allowInsecure: editAgent.allowInsecure,
-          });
+          };
+          if (isWslConfig(editAgent.connectionConfig)) {
+            const c = editAgent.connectionConfig;
+            baseValues.wsl_distro = c.distro;
+            baseValues.wsl_cliCommand = c.cliCommand;
+            baseValues.wsl_customCliPath = c.customCliPath;
+            baseValues.wsl_workingDir = c.workingDir;
+            baseValues.wsl_extraArgs = (c.cliArgs ?? []).join('\n');
+            baseValues.wsl_transportMode = c.transportMode ?? 'stream-json';
+          } else if (isSshConfig(editAgent.connectionConfig)) {
+            const c = editAgent.connectionConfig;
+            baseValues.ssh_host = c.host;
+            baseValues.ssh_port = c.port;
+            baseValues.ssh_username = c.username;
+            baseValues.ssh_privateKeyPath = c.privateKeyPath;
+            // Do NOT pre-fill the passphrase. Showing ciphertext or plaintext
+            // here is unsafe; the user re-enters the passphrase only when
+            // changing it, and an empty value preserves the existing one.
+            baseValues.ssh_passphrase = '';
+            baseValues.ssh_cliCommand = c.cliCommand;
+            baseValues.ssh_customCliPath = c.customCliPath;
+            baseValues.ssh_workingDir = c.workingDir;
+            baseValues.ssh_extraArgs = (c.cliArgs ?? []).join('\n');
+            baseValues.ssh_transportMode = c.transportMode ?? 'stream-json';
+          }
+          form.setFieldsValue(baseValues as never);
         } else {
           setActiveProtocol('openclaw');
           setAvatar('\u{1F916}');
-          form.setFieldsValue({ authType: 'none' });
+          form.setFieldsValue({ authType: 'none' } as never);
         }
       }}
       afterClose={() => {
         setPairingState('idle');
+        setTestStatus('');
+        setHostKeyInfo(null);
         form.resetFields();
       }}
     >
@@ -343,67 +474,125 @@ const RemoteAgentFormModal: React.FC<{
 
         {/* Connection fields */}
         <Form form={form} layout='vertical' autoComplete='off'>
-          <FormItem
-            label={t('settings.remoteAgent.url')}
-            field='url'
-            rules={[{ required: true, message: t('settings.remoteAgent.urlRequired') }]}
-          >
-            <Input placeholder='wss://example.com/gateway' />
-          </FormItem>
+          <ProtocolPicker value={activeProtocol as RemoteAgentProtocol} onChange={(p) => setActiveProtocol(p)} />
 
-          <FormItem label={t('settings.remoteAgent.authType')} field='authType' rules={[{ required: true }]}>
-            <Select>
-              <Select.Option value='none'>{t('settings.remoteAgent.authNone')}</Select.Option>
-              <Select.Option value='bearer'>{t('settings.remoteAgent.authBearer')}</Select.Option>
-            </Select>
-          </FormItem>
+          {activeProtocol === 'openclaw' && (
+            <>
+              <FormItem
+                label={t('settings.remoteAgent.url')}
+                field='url'
+                rules={[{ required: true, message: t('settings.remoteAgent.urlRequired') }]}
+              >
+                <Input placeholder='wss://example.com/gateway' />
+              </FormItem>
 
-          <Form.Item shouldUpdate noStyle>
-            {(values: Record<string, unknown>) =>
-              values.authType === 'bearer' ? (
-                <FormItem
-                  label={t('settings.remoteAgent.authToken')}
-                  field='authToken'
-                  rules={[{ required: true, message: t('settings.remoteAgent.tokenRequired') }]}
-                >
-                  <Input.Password placeholder={t('settings.remoteAgent.tokenPlaceholder')} />
-                </FormItem>
-              ) : null
-            }
-          </Form.Item>
+              <FormItem label={t('settings.remoteAgent.authType')} field='authType' rules={[{ required: true }]}>
+                <Select>
+                  <Select.Option value='none'>{t('settings.remoteAgent.authNone')}</Select.Option>
+                  <Select.Option value='bearer'>{t('settings.remoteAgent.authBearer')}</Select.Option>
+                </Select>
+              </FormItem>
 
-          <Form.Item shouldUpdate noStyle>
-            {(values: Record<string, unknown>) =>
-              typeof values.url === 'string' && values.url.startsWith('wss://') ? (
-                <FormItem
-                  label={t('settings.remoteAgent.allowInsecure')}
-                  field='allowInsecure'
-                  triggerPropName='checked'
-                  extra={
-                    <Typography.Text type='secondary' className='text-12px'>
-                      {t('settings.remoteAgent.allowInsecureHint')}
-                    </Typography.Text>
-                  }
-                >
-                  <Switch />
-                </FormItem>
-              ) : null
-            }
-          </Form.Item>
+              <Form.Item shouldUpdate noStyle>
+                {(values: Record<string, unknown>) =>
+                  values.authType === 'bearer' ? (
+                    <FormItem
+                      label={t('settings.remoteAgent.authToken')}
+                      field='authToken'
+                      rules={[{ required: true, message: t('settings.remoteAgent.tokenRequired') }]}
+                    >
+                      <Input.Password placeholder={t('settings.remoteAgent.tokenPlaceholder')} />
+                    </FormItem>
+                  ) : null
+                }
+              </Form.Item>
 
-          <Button
-            long
-            type='outline'
-            icon={<Speed theme='outline' size='14' />}
-            loading={testing}
-            onClick={handleTestConnection}
-          >
-            {t('settings.remoteAgent.testConnection')}
-          </Button>
+              <Form.Item shouldUpdate noStyle>
+                {(values: Record<string, unknown>) =>
+                  typeof values.url === 'string' && values.url.startsWith('wss://') ? (
+                    <FormItem
+                      label={t('settings.remoteAgent.allowInsecure')}
+                      field='allowInsecure'
+                      triggerPropName='checked'
+                      extra={
+                        <Typography.Text type='secondary' className='text-12px'>
+                          {t('settings.remoteAgent.allowInsecureHint')}
+                        </Typography.Text>
+                      }
+                    >
+                      <Switch />
+                    </FormItem>
+                  ) : null
+                }
+              </Form.Item>
+            </>
+          )}
+
+          {activeProtocol === 'wsl' && <WslFields />}
+          {activeProtocol === 'ssh' && (
+            <SshFields
+              onBrowseKey={async () => {
+                const paths = await ipcBridge.dialog.showOpen.invoke({
+                  properties: ['openFile'],
+                  filters: [
+                    { name: 'SSH Keys', extensions: ['*'] },
+                    { name: 'PEM', extensions: ['pem', 'key'] },
+                  ],
+                });
+                if (paths && paths[0]) {
+                  form.setFieldsValue({ ssh_privateKeyPath: paths[0] } as never);
+                }
+              }}
+            />
+          )}
+
+          <div className='flex items-center justify-between gap-12px mt-12px'>
+            <TestConnectionStatus protocol={activeProtocol as RemoteAgentProtocol} status={testStatus} />
+            <Button
+              type='outline'
+              icon={<Speed theme='outline' size='14' />}
+              loading={testing}
+              onClick={handleTestConnection}
+            >
+              {t('settings.remoteAgent.testConnection')}
+            </Button>
+          </div>
         </Form>
       </div>
+
+      <HostKeyConfirmModal
+        visible={!!hostKeyInfo}
+        fingerprint={hostKeyInfo?.fingerprint ?? ''}
+        onConfirm={handleHostKeyConfirm}
+        onCancel={() => setHostKeyInfo(null)}
+      />
     </AionModal>
   );
+};
+
+const protocolTagColor = (protocol?: RemoteAgentProtocol): string => {
+  switch (protocol) {
+    case 'wsl':
+      return 'green';
+    case 'ssh':
+      return 'orange';
+    default:
+      return 'arcoblue';
+  }
+};
+
+const buildAgentSummary = (agent: RemoteAgentConfig): string => {
+  if (agent.protocol === 'wsl' && isWslConfig(agent.connectionConfig)) {
+    const c = agent.connectionConfig;
+    const cli = c.customCliPath || c.cliCommand;
+    return `WSL: ${c.distro} / ${cli}`;
+  }
+  if (agent.protocol === 'ssh' && isSshConfig(agent.connectionConfig)) {
+    const c = agent.connectionConfig;
+    const cli = c.customCliPath || c.cliCommand;
+    return `${c.username}@${c.host}:${c.port} / ${cli}`;
+  }
+  return agent.url;
 };
 
 const RemoteAgentManagement: React.FC = () => {
@@ -511,7 +700,7 @@ const RemoteAgentManagement: React.FC = () => {
                     {agent.status}
                   </Tag>
                 )}
-                <Tag size='small' color='arcoblue'>
+                <Tag size='small' color={protocolTagColor(agent.protocol)}>
                   {agent.protocol}
                 </Tag>
               </div>
@@ -520,7 +709,7 @@ const RemoteAgentManagement: React.FC = () => {
                 type='secondary'
                 className='mb-14px block min-h-[36px] text-center text-12px line-clamp-2'
               >
-                {agent.url}
+                {buildAgentSummary(agent)}
               </Typography.Text>
 
               <div className='mt-auto grid grid-cols-2 gap-8px'>

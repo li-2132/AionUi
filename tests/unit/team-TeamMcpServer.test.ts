@@ -59,6 +59,19 @@ vi.mock('@process/agent/acp/AcpDetector', () => ({
   },
 }));
 
+const mockDetectedAgents = vi.hoisted(() => ({
+  value: [
+    { backend: 'claude', name: 'Claude' },
+    { backend: 'codex', name: 'Codex' },
+    { backend: 'remote', name: 'SSH Codex', remoteAgentId: 'remote-1' },
+  ] as Array<Record<string, unknown>>,
+}));
+vi.mock('@process/agent/AgentRegistry', () => ({
+  agentRegistry: {
+    getDetectedAgents: vi.fn(() => mockDetectedAgents.value),
+  },
+}));
+
 import { TeamMcpServer } from '@process/team/mcp/team/TeamMcpServer';
 import type { Mailbox } from '@process/team/Mailbox';
 import type { TaskManager } from '@process/team/TaskManager';
@@ -524,6 +537,30 @@ describe('TeamMcpServer', () => {
 
       expect(response.error).toBeUndefined();
       expect(spawnAgent).toHaveBeenCalledWith('WordBot', 'claude', undefined, 'builtin-word-creator');
+    });
+
+    it('spawns a remote teammate using remote_agent_id', async () => {
+      const response = (await tcpRequest(server.getPort(), {
+        tool: 'team_spawn_agent',
+        args: { name: 'RemoteBot', agent_type: 'remote', remote_agent_id: 'remote-1' },
+        from_slot_id: 'slot-lead',
+        auth_token: authToken,
+      })) as Record<string, unknown>;
+
+      expect(response.error).toBeUndefined();
+      expect(spawnAgent).toHaveBeenCalledWith('RemoteBot', 'remote', undefined, 'remote-1');
+    });
+
+    it('rejects unknown remote_agent_id values', async () => {
+      const response = (await tcpRequest(server.getPort(), {
+        tool: 'team_spawn_agent',
+        args: { name: 'RemoteBot', remote_agent_id: 'missing-remote' },
+        from_slot_id: 'slot-lead',
+        auth_token: authToken,
+      })) as Record<string, unknown>;
+
+      expect(response.error).toContain('Remote agent "missing-remote" not found');
+      expect(spawnAgent).not.toHaveBeenCalled();
     });
 
     it('rejects spawn when custom_agent_id does not match any preset', async () => {

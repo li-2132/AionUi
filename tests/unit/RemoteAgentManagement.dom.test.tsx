@@ -92,6 +92,11 @@ vi.mock('@icon-park/react', () => ({
   ReduceOne: () => <span>ReduceOneIcon</span>,
   Robot: () => <span>RobotIcon</span>,
   Speed: () => <span>SpeedIcon</span>,
+  Cloudy: () => <span>CloudyIcon</span>,
+  Computer: () => <span>ComputerIcon</span>,
+  Connection: () => <span>ConnectionIcon</span>,
+  Refresh: () => <span>RefreshIcon</span>,
+  Folder: () => <span>FolderIcon</span>,
 }));
 
 vi.mock('../../src/process/agent/remote/types', () => ({}));

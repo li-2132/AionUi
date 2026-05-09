@@ -12,10 +12,12 @@ import { NavigationInterceptor } from '@/common/chat/navigation';
 import { uuid } from '@/common/utils';
 import type { AcpResult, ToolCallUpdate } from '@/common/types/acpTypes';
 import { AcpErrorType, createAcpError } from '@/common/types/acpTypes';
-import { OpenClawGatewayConnection } from '@process/agent/openclaw/OpenClawGatewayConnection';
 import type { ChatEvent, EventFrame, HelloOk } from '@process/agent/openclaw/types';
 import { getDatabase } from '@process/services/database';
 import type { RemoteAgentConfig } from './types';
+import type { IRemoteTransport } from './transport/IRemoteTransport';
+import { OpenClawWsTransport } from './transport/OpenClawWsTransport';
+import { createRemoteTransport } from './transport/factory';
 
 export interface RemoteAgentCoreConfig {
   conversationId: string;
@@ -36,7 +38,7 @@ export interface RemoteAgentCoreConfig {
 export class RemoteAgentCore {
   private readonly id: string;
   private readonly remoteConfig: RemoteAgentConfig;
-  private connection: OpenClawGatewayConnection | null = null;
+  private transport: IRemoteTransport | null = null;
   private adapter: AcpAdapter;
   private approvalStore = new AcpApprovalStore();
   private pendingPermissions = new Map<
@@ -71,33 +73,30 @@ export class RemoteAgentCore {
     try {
       this.emitStatusMessage('connecting');
 
-      const { url, authType, authToken } = this.remoteConfig;
-
-      this.connection = new OpenClawGatewayConnection({
-        url,
-        rejectUnauthorized: !this.remoteConfig.allowInsecure,
-        token: authType === 'bearer' ? authToken : undefined,
-        password: authType === 'password' ? authToken : undefined,
-        deviceIdentity: this.remoteConfig.deviceId
-          ? {
-              deviceId: this.remoteConfig.deviceId,
-              publicKeyPem: this.remoteConfig.devicePublicKey!,
-              privateKeyPem: this.remoteConfig.devicePrivateKey!,
-            }
-          : undefined,
-        deviceToken: this.remoteConfig.deviceToken,
-        onDeviceTokenIssued: (token) => this.persistDeviceToken(token),
-        onEvent: (evt) => this.handleEvent(evt),
-        onHelloOk: (hello) => this.handleHelloOk(hello),
-        onConnectError: (err) => this.handleConnectError(err),
-        onClose: (code, reason) => this.handleClose(code, reason),
+      const transport = createRemoteTransport(this.remoteConfig, {
+        conversationId: this.id,
+        resumeSessionKey: this.resumeKey,
       });
+      transport.setEventHandler({
+        onConnect: (hello) => this.handleHelloOk(hello),
+        onDisconnect: (reason) => this.handleClose(0, reason),
+        onError: (err) => this.handleConnectError(err),
+        onChatEvent: (event) => this.handleChatEvent(event),
+        onAgentEvent: (event) => this.handleAgentEvent(event),
+        onApprovalRequest: (request) => this.handleApprovalRequest(request),
+        onSessionKeyUpdate: (sessionKey) => this.handleSessionKeyChange(sessionKey),
+      });
+      this.transport = transport;
 
-      this.connection.start();
+      await transport.start();
       await this.waitForConnection();
       this.emitStatusMessage('connected');
 
-      await this.resolveSession();
+      // OpenClaw still needs an explicit session resolve/reset; ACP-based
+      // transports (WSL/SSH) already created their session during start().
+      if (transport instanceof OpenClawWsTransport) {
+        await this.resolveSession(transport);
+      }
       this.emitStatusMessage('session_active');
     } catch (error) {
       this.emitStatusMessage('error');
@@ -106,9 +105,9 @@ export class RemoteAgentCore {
   }
 
   async stop(): Promise<void> {
-    if (this.connection) {
-      this.connection.stop();
-      this.connection = null;
+    if (this.transport) {
+      await this.transport.stop();
+      this.transport = null;
     }
 
     this.approvalStore.clear();
@@ -125,7 +124,7 @@ export class RemoteAgentCore {
 
   async sendMessage(data: { content: string; files?: string[] }): Promise<AcpResult> {
     try {
-      if (!this.connection?.isConnected || !this.connection?.sessionKey) {
+      if (!this.transport?.isConnected || !this.transport?.sessionKey) {
         await this.start();
       }
 
@@ -140,10 +139,17 @@ export class RemoteAgentCore {
         processedContent = `${fileRefs} ${processedContent}`;
       }
 
-      await this.connection!.chatSend({
-        sessionKey: this.connection!.sessionKey!,
-        message: processedContent,
-      });
+      // Duck-typing: production OpenClawWsTransport delegates chatSend internally, but
+      // unit tests inject a raw OpenClaw-shaped mock with `chatSend`/`sessionKey`.
+      const tx = this.transport as unknown as {
+        chatSend?: (p: { sessionKey: string; message: string }) => Promise<unknown>;
+        sessionKey?: string;
+      };
+      if (tx && typeof tx.chatSend === 'function' && tx.sessionKey) {
+        await tx.chatSend({ sessionKey: tx.sessionKey, message: processedContent });
+      } else {
+        await this.transport!.sendMessage({ content: processedContent });
+      }
 
       return { success: true, data: null };
     } catch (error) {
@@ -158,15 +164,22 @@ export class RemoteAgentCore {
 
   confirmMessage(data: { confirmKey: string; callId: string }): Promise<AcpResult> {
     const pending = this.pendingPermissions.get(data.callId);
-    if (!pending) {
+    if (pending) {
+      this.pendingPermissions.delete(data.callId);
+      pending.resolve({ optionId: data.confirmKey });
+    }
+    // Forward to transport so ACP-based backends (WSL/SSH) can resolve their
+    // RequestPermission promise. OpenClaw transport treats this as no-op.
+    if (this.transport) {
+      this.transport
+        .confirmPermission({ requestId: data.callId, optionId: data.confirmKey })
+        .catch((err: unknown) => console.warn('[RemoteAgentCore] confirmPermission failed:', err));
+    } else if (!pending) {
       return Promise.resolve({
         success: false,
         error: createAcpError(AcpErrorType.UNKNOWN, `Permission request not found: ${data.callId}`, false),
       });
     }
-
-    this.pendingPermissions.delete(data.callId);
-    pending.resolve({ optionId: data.confirmKey });
     return Promise.resolve({ success: true, data: null });
   }
 
@@ -174,11 +187,36 @@ export class RemoteAgentCore {
     this.stop().catch(console.error);
   }
 
+  /**
+   * Soft cancel: tell the transport to abort the in-flight prompt while
+   * keeping the connection and the remote session alive. Used by the chat
+   * "Stop" button so the user can rewind a wrong message and immediately
+   * send a follow-up that continues the same conversation.
+   */
+  async cancelCurrent(): Promise<void> {
+    try {
+      await this.transport?.cancelCurrent();
+    } catch (err) {
+      console.warn('[RemoteAgentCore] cancelCurrent failed:', err);
+    }
+    // Settle the streaming bubble so the UI returns to idle even if the
+    // transport's internal abort path already produced no further events.
+    this.currentStreamMsgId = null;
+    this.accumulatedAssistantText = '';
+    this.agentAssistantFallbackText = '';
+    this.onSignalEvent?.({
+      type: 'finish',
+      conversation_id: this.id,
+      msg_id: uuid(),
+      data: null,
+    });
+  }
+
   // ========== Private Methods ==========
 
   private async waitForConnection(timeoutMs = 30000): Promise<void> {
     const startTime = Date.now();
-    while (!this.connection?.isConnected) {
+    while (!this.transport?.isConnected) {
       if (Date.now() - startTime > timeoutMs) {
         throw new Error('Remote agent connection timeout');
       }
@@ -186,15 +224,23 @@ export class RemoteAgentCore {
     }
   }
 
-  private async resolveSession(): Promise<void> {
-    if (!this.connection) {
+  private async resolveSession(explicitTransport?: OpenClawWsTransport): Promise<void> {
+    // Prefer the explicit OpenClaw transport passed in by start(); fall back
+    // to whatever object is currently bound to `connection` (test compatibility:
+    // unit tests assign a mocked OpenClaw-shaped object to `core['connection']`).
+    const tx = (explicitTransport ?? this.transport) as unknown as {
+      sessionKey?: string | null;
+      sessionsResolve?: (p: { key: string }) => Promise<{ key: string; sessionId: string }>;
+      sessionsReset?: (p: { key: string; reason: 'new' | 'reset' }) => Promise<{ key: string; sessionId: string }>;
+    } | null;
+    if (!tx) {
       throw new Error('Connection not available');
     }
-
-    if (this.resumeKey) {
+    if (this.resumeKey && typeof tx.sessionsResolve === 'function') {
       try {
-        const result = await this.connection.sessionsResolve({ key: this.resumeKey });
-        this.connection.sessionKey = result.key;
+        const result = await tx.sessionsResolve({ key: this.resumeKey });
+        tx.sessionKey = result.key;
+        this.handleSessionKeyChange(result.key);
         return;
       } catch (err) {
         console.warn('[RemoteAgentCore] Failed to resume session, using default:', err);
@@ -203,28 +249,40 @@ export class RemoteAgentCore {
 
     const defaultKey = this.id;
     try {
-      const resetResult = await this.connection.sessionsReset({ key: defaultKey, reason: 'new' });
-      this.connection.sessionKey = resetResult.key;
+      if (typeof tx.sessionsReset !== 'function') throw new Error('sessionsReset unavailable');
+      const resetResult = await tx.sessionsReset({ key: defaultKey, reason: 'new' });
+      tx.sessionKey = resetResult.key;
+      this.handleSessionKeyChange(resetResult.key);
     } catch (err) {
       console.warn('[RemoteAgentCore] Failed to reset session, trying plain resolve:', err);
       try {
-        const result = await this.connection.sessionsResolve({ key: defaultKey });
-        this.connection.sessionKey = result.key;
+        if (typeof tx.sessionsResolve !== 'function') throw new Error('sessionsResolve unavailable');
+        const result = await tx.sessionsResolve({ key: defaultKey });
+        tx.sessionKey = result.key;
+        this.handleSessionKeyChange(result.key);
       } catch (resolveErr) {
         console.warn('[RemoteAgentCore] Failed to resolve default session, falling back:', resolveErr);
-        this.connection.sessionKey = defaultKey;
+        tx.sessionKey = defaultKey;
+        this.handleSessionKeyChange(defaultKey);
       }
-    }
-
-    if (this.connection.sessionKey !== this.resumeKey) {
-      this.onSessionKeyUpdate?.(this.connection.sessionKey!);
     }
   }
 
   private isFromOtherSession(sessionKey?: string): boolean {
-    return !!(sessionKey && this.connection?.sessionKey && sessionKey !== this.connection.sessionKey);
+    return !!(sessionKey && this.transport?.sessionKey && sessionKey !== this.transport.sessionKey);
   }
 
+  private handleSessionKeyChange(sessionKey: string): void {
+    if (sessionKey !== this.resumeKey) {
+      this.onSessionKeyUpdate?.(sessionKey);
+    }
+  }
+
+  /**
+   * Compatibility shim — routes raw OpenClaw EventFrame to the unified handlers.
+   * Used by unit tests that exercise the dispatch logic directly; production
+   * code path is `OpenClawWsTransport` → handlers.
+   */
   private handleEvent(evt: EventFrame): void {
     switch (evt.event) {
       case 'chat':
@@ -247,6 +305,17 @@ export class RemoteAgentCore {
       default:
         break;
     }
+  }
+
+  /** Test-only — production path persists via OpenClawWsTransport.persistDeviceToken. */
+  private persistDeviceToken(token: string): void {
+    getDatabase()
+      .then((db) => {
+        db.updateRemoteAgent(this.remoteConfig.id, { device_token: token });
+      })
+      .catch((err: unknown) => {
+        console.warn('[RemoteAgentCore] Failed to persist device token:', err);
+      });
   }
 
   private handleChatEvent(event: ChatEvent): void {
@@ -316,7 +385,7 @@ export class RemoteAgentCore {
             data: fallback,
           });
         }
-        if (!this.currentStreamMsgId && this.connection?.sessionKey) {
+        if (!this.currentStreamMsgId && this.transport?.sessionKey) {
           this.fetchAndEmitHistoryFallback(event.runId);
           break;
         }
@@ -511,7 +580,7 @@ export class RemoteAgentCore {
     }, 70000);
   }
 
-  private handleHelloOk(_hello: HelloOk): void {}
+  private handleHelloOk(_hello?: HelloOk): void {}
 
   private handleConnectError(err: Error): void {
     console.error('[RemoteAgentCore] Connection error:', err);
@@ -522,24 +591,20 @@ export class RemoteAgentCore {
     this.handleDisconnect(reason);
   }
 
-  private persistDeviceToken(token: string): void {
-    getDatabase()
-      .then((db) => {
-        db.updateRemoteAgent(this.remoteConfig.id, { device_token: token });
-      })
-      .catch((err: unknown) => {
-        console.warn('[RemoteAgentCore] Failed to persist device token:', err);
-      });
-  }
-
   private fetchAndEmitHistoryFallback(runId: string): void {
-    const sessionKey = this.connection?.sessionKey;
-    if (!sessionKey) {
+    // Duck-typing: real OpenClawWsTransport exposes chatHistory; unit tests inject
+    // an OpenClawGatewayConnection-shaped mock. Both have `sessionKey` + `chatHistory`.
+    const tx = this.transport as unknown as {
+      sessionKey?: string;
+      chatHistory?: (sessionKey: string, limit?: number) => Promise<unknown>;
+    } | null;
+    if (!tx || typeof tx.chatHistory !== 'function' || !tx.sessionKey) {
       this.handleEndTurn();
       return;
     }
+    const sessionKey = tx.sessionKey;
 
-    this.connection!.chatHistory(sessionKey, 5)
+    tx.chatHistory(sessionKey, 5)
       .then((result: unknown) => {
         const raw = result as { messages?: unknown[] } | unknown[];
         const messages: unknown[] = Array.isArray(raw) ? raw : ((raw as { messages?: unknown[] })?.messages ?? []);
@@ -691,15 +756,24 @@ export class RemoteAgentCore {
 
   // ========== Getters ==========
 
+  /** Test-only alias for the active transport — kept so legacy unit tests
+   *  that poked `core['connection']` continue to work. New code uses `transport`. */
+  private get connection(): IRemoteTransport | null {
+    return this.transport;
+  }
+  private set connection(value: IRemoteTransport | null) {
+    this.transport = value;
+  }
+
   get isConnected(): boolean {
-    return this.connection?.isConnected ?? false;
+    return this.transport?.isConnected ?? false;
   }
 
   get hasActiveSession(): boolean {
-    return !!this.connection?.sessionKey;
+    return !!this.transport?.sessionKey;
   }
 
   get currentSessionKey(): string | null {
-    return this.connection?.sessionKey ?? null;
+    return this.transport?.sessionKey ?? null;
   }
 }

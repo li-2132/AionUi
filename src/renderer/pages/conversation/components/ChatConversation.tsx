@@ -13,7 +13,7 @@ import { usePresetAssistantInfo, resolveAssistantConfigId } from '@/renderer/hoo
 import { iconColors } from '@/renderer/styles/colors';
 import { Button, Dropdown, Menu, Tooltip, Typography } from '@arco-design/web-react';
 import { History } from '@icon-park/react';
-import React, { useCallback, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import useSWR from 'swr';
@@ -262,6 +262,39 @@ const ChatConversation: React.FC<{
 
   const isGeminiConversation = conversation?.type === 'gemini';
   const isAionrsConversation = conversation?.type === 'aionrs';
+  const isRemoteConversation = conversation?.type === 'remote';
+
+  // For remote conversations: fetch the agent so we can render a context banner
+  // (WSL / SSH file-watch capabilities are remote-side dependent).
+  const remoteAgentId = (conversation?.extra as { remoteAgentId?: string } | undefined)?.remoteAgentId;
+  const { data: remoteAgent } = useSWR(remoteAgentId ? ['remote-agent.get', remoteAgentId] : null, ([, id]) =>
+    ipcBridge.remoteAgent.get.invoke({ id })
+  );
+  const isWslOrSshConversation = remoteAgent?.protocol === 'wsl' || remoteAgent?.protocol === 'ssh';
+
+  // Activate remote inotifywait stream when entering a wsl/ssh workspace.
+  // The bridge tracks per-agent state and silently no-ops on duplicate starts.
+  const [remoteWatchAvailable, setRemoteWatchAvailable] = useState<boolean | null>(null);
+  useEffect(() => {
+    const workspacePath = conversation?.extra?.workspace;
+    if (!isWslOrSshConversation || !remoteAgentId || !workspacePath) {
+      setRemoteWatchAvailable(null);
+      return;
+    }
+    let cancelled = false;
+    ipcBridge.remoteWatch.start
+      .invoke({ agentId: remoteAgentId, rootPath: workspacePath })
+      .then((result) => {
+        if (!cancelled) setRemoteWatchAvailable(result.ok && result.available);
+      })
+      .catch(() => {
+        if (!cancelled) setRemoteWatchAvailable(false);
+      });
+    return () => {
+      cancelled = true;
+      ipcBridge.remoteWatch.stop.invoke({ agentId: remoteAgentId }).catch(() => {});
+    };
+  }, [isWslOrSshConversation, remoteAgentId, conversation?.extra?.workspace]);
 
   // 使用统一的 Hook 获取预设助手信息（ACP/Codex 会话）
   // Use unified hook for preset assistant info (ACP/Codex conversations)
@@ -448,6 +481,12 @@ const ChatConversation: React.FC<{
       workspacePath={conversation?.extra?.workspace}
       conversationId={conversation?.id}
     >
+      {isWslOrSshConversation && remoteWatchAvailable === false && (
+        <div className='mx-16px mt-8px flex items-center gap-8px rounded-6px bg-[var(--color-fill-2)] px-12px py-6px text-12px text-t-secondary'>
+          <span className='inline-block h-6px w-6px shrink-0 rounded-full bg-orange-400' />
+          {t('conversation.remoteModeBanner')}
+        </div>
+      )}
       {conversationNode}
     </ChatLayout>
   );

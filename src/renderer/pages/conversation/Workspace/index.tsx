@@ -49,6 +49,7 @@ const ChatWorkspace: React.FC<WorkspaceProps> = ({
   conversation_id,
   workspace,
   eventPrefix = 'gemini',
+  remoteAgentId,
   messageApi: externalMessageApi,
   teamId,
 }) => {
@@ -96,6 +97,7 @@ const ChatWorkspace: React.FC<WorkspaceProps> = ({
   const fileOpsHook = useWorkspaceFileOps({
     workspace,
     eventPrefix,
+    remoteAgentId,
     messageApi,
     t,
     setFiles: treeHook.setFiles,
