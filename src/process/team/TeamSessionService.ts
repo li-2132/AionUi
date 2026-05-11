@@ -672,7 +672,16 @@ export class TeamSessionService {
     };
     const updatedAgents = [...team.agents, newAgent];
     await this.repo.update(teamId, { agents: updatedAgents, updatedAt: Date.now() });
-    this.sessions.get(teamId)?.addAgent(newAgent);
+    const activeSession = this.sessions.get(teamId);
+    activeSession?.addAgent(newAgent);
+    const stdioConfig = activeSession?.getStdioConfig(newAgent.slotId);
+    if (stdioConfig && newAgent.conversationId) {
+      await this.conversationService.updateConversation(
+        newAgent.conversationId,
+        { extra: { teamMcpStdioConfig: stdioConfig } } as any,
+        true
+      );
+    }
     // Notify renderer so SWR caches (useTeamList, useSiderTeamBadges) revalidate
     ipcBridge.team.listChanged.emit({ teamId, action: 'agent_added' });
     return newAgent;
@@ -775,15 +784,6 @@ export class TeamSessionService {
         model,
         customAgentId,
       });
-      // Inject team MCP stdio config into the new agent's conversation (with agent identity)
-      const stdioConfig = session?.getStdioConfig(newAgent.slotId);
-      if (stdioConfig && newAgent.conversationId) {
-        await this.conversationService.updateConversation(
-          newAgent.conversationId,
-          { extra: { teamMcpStdioConfig: stdioConfig } } as any,
-          true
-        );
-      }
       return newAgent;
     };
     session = new TeamSession(team, this.repo, this.workerTaskManager, spawnAgent);

@@ -33,6 +33,8 @@ const mockConvGet = vi.fn().mockResolvedValue({
   extra: { workspace: '/tmp/ws', remoteAgentId: 'agent-1' },
 });
 const mockSendMessage = vi.fn().mockResolvedValue(undefined);
+const mockTeamSendMessage = vi.fn().mockResolvedValue(undefined);
+const mockTeamSendMessageToAgent = vi.fn().mockResolvedValue(undefined);
 const mockStop = vi.fn().mockResolvedValue(undefined);
 const mockRemoteGet = vi.fn().mockResolvedValue({ name: 'TestBot', avatar: '🤖' });
 
@@ -60,6 +62,10 @@ vi.mock('../../src/common', () => ({
     },
     remoteAgent: {
       get: { invoke: (...args: unknown[]) => mockRemoteGet(...args) },
+    },
+    team: {
+      sendMessage: { invoke: (...args: unknown[]) => mockTeamSendMessage(...args) },
+      sendMessageToAgent: { invoke: (...args: unknown[]) => mockTeamSendMessageToAgent(...args) },
     },
   },
 }));
@@ -95,24 +101,30 @@ vi.mock('../../src/renderer/hooks/system/useCommandQueueEnabled', () => ({
   useCommandQueueEnabled: () => true,
 }));
 
+let capturedQueueExecute: ((item: { input: string; files: string[] }) => Promise<void>) | null = null;
 vi.mock('../../src/renderer/pages/conversation/platforms/useConversationCommandQueue', () => ({
   shouldEnqueueConversationCommand: () => false,
-  useConversationCommandQueue: () => ({
-    items: [],
-    isPaused: false,
-    isInteractionLocked: false,
-    hasPendingCommands: false,
-    enqueue: vi.fn(),
-    update: vi.fn(),
-    remove: vi.fn(),
-    clear: vi.fn(),
-    reorder: vi.fn(),
-    pause: vi.fn(),
-    resume: vi.fn(),
-    lockInteraction: vi.fn(),
-    unlockInteraction: vi.fn(),
-    resetActiveExecution: vi.fn(),
-  }),
+  useConversationCommandQueue: (options: {
+    onExecute: (item: { input: string; files: string[] }) => Promise<void>;
+  }) => {
+    capturedQueueExecute = options.onExecute;
+    return {
+      items: [],
+      isPaused: false,
+      isInteractionLocked: false,
+      hasPendingCommands: false,
+      enqueue: vi.fn(),
+      update: vi.fn(),
+      remove: vi.fn(),
+      clear: vi.fn(),
+      reorder: vi.fn(),
+      pause: vi.fn(),
+      resume: vi.fn(),
+      lockInteraction: vi.fn(),
+      unlockInteraction: vi.fn(),
+      resetActiveExecution: vi.fn(),
+    };
+  },
 }));
 
 vi.mock('../../src/renderer/services/FileService', () => ({
@@ -208,6 +220,7 @@ describe('RemoteSendBox', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     capturedResponseHandler = null;
+    capturedQueueExecute = null;
     sessionStorage.clear();
   });
 
@@ -435,5 +448,41 @@ describe('RemoteSendBox', () => {
     });
 
     expect(screen.queryByTestId('loading')).toBeNull();
+  });
+
+  it('routes remote team leader messages through team.sendMessage', async () => {
+    await act(async () => {
+      render(<RemoteSendBox conversation_id='conv-1' teamId='team-1' />);
+    });
+
+    await act(async () => {
+      await capturedQueueExecute?.({ input: 'hello team', files: ['/tmp/a.txt'] });
+    });
+
+    expect(mockTeamSendMessage).toHaveBeenCalledWith({
+      teamId: 'team-1',
+      content: 'hello team',
+      files: ['/tmp/a.txt'],
+    });
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockAddOrUpdateMessage).not.toHaveBeenCalledWith(expect.objectContaining({ position: 'right' }), true);
+  });
+
+  it('routes remote team member messages through team.sendMessageToAgent', async () => {
+    await act(async () => {
+      render(<RemoteSendBox conversation_id='conv-1' teamId='team-1' agentSlotId='slot-worker' />);
+    });
+
+    await act(async () => {
+      await capturedQueueExecute?.({ input: 'hello worker', files: [] });
+    });
+
+    expect(mockTeamSendMessageToAgent).toHaveBeenCalledWith({
+      teamId: 'team-1',
+      slotId: 'slot-worker',
+      content: 'hello worker',
+      files: [],
+    });
+    expect(mockSendMessage).not.toHaveBeenCalled();
   });
 });

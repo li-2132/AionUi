@@ -179,6 +179,8 @@ const TeamChatView: React.FC<TeamChatViewProps> = ({ conversation, hideSendBox, 
             conversation_id={conversation.id}
             workspace={conversation.extra?.workspace}
             hideSendBox={hideSendBox}
+            teamId={teamId}
+            agentSlotId={agentSlotId}
             emptySlot={emptySlot}
           />
         );

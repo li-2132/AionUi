@@ -423,6 +423,76 @@ describe('TeamSessionService', () => {
     );
   });
 
+  it('injects team MCP config when adding a teammate to an active session', async () => {
+    mockConfigGet.mockResolvedValue(undefined);
+
+    const team: TTeam = {
+      id: 'team-1',
+      userId: 'user-1',
+      name: 'Active Team',
+      workspace: '/workspace',
+      workspaceMode: 'shared',
+      leaderAgentId: 'slot-lead',
+      agents: [
+        {
+          slotId: 'slot-lead',
+          conversationId: 'conv-lead',
+          role: 'leader',
+          agentType: 'gemini',
+          agentName: 'Leader',
+          conversationType: 'gemini',
+          status: 'idle',
+        },
+      ],
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const repo = makeRepo({
+      findById: vi.fn().mockResolvedValue(team),
+      update: vi.fn().mockImplementation(async (_id, updates) => ({ ...team, ...updates })),
+    });
+    const conversationService = makeConversationService({
+      createConversation: vi.fn().mockResolvedValue({ id: 'conv-new', extra: {} }),
+      getConversation: vi.fn().mockResolvedValue(undefined),
+      updateConversation: vi.fn().mockResolvedValue(undefined),
+    });
+    const service = new TeamSessionService(repo, makeWorkerTaskManager() as any, conversationService);
+    const activeSession = {
+      addAgent: vi.fn(),
+      getStdioConfig: vi.fn((slotId: string) => ({
+        name: 'aionui-team-team-1',
+        command: 'node',
+        args: ['team-mcp-stdio.js'],
+        env: [{ name: 'TEAM_AGENT_SLOT_ID', value: slotId }],
+      })),
+    };
+    (service as unknown as { sessions: Map<string, typeof activeSession> }).sessions.set('team-1', activeSession);
+
+    const added = await service.addAgent('team-1', {
+      conversationId: '',
+      role: 'teammate',
+      agentType: 'gemini',
+      agentName: 'Worker',
+      conversationType: 'gemini',
+      status: 'pending',
+    });
+
+    expect(activeSession.addAgent).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'conv-new' }));
+    expect(activeSession.getStdioConfig).toHaveBeenCalledWith(added.slotId);
+    expect(conversationService.updateConversation).toHaveBeenCalledWith(
+      'conv-new',
+      {
+        extra: {
+          teamMcpStdioConfig: expect.objectContaining({
+            name: 'aionui-team-team-1',
+            env: [{ name: 'TEAM_AGENT_SLOT_ID', value: added.slotId }],
+          }),
+        },
+      },
+      true
+    );
+  });
+
   it('repairs legacy teams whose agents array was lost but conversations still exist', async () => {
     const legacyTeam: TTeam = {
       id: 'team-legacy',

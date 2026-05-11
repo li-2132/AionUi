@@ -50,7 +50,20 @@ const useRemoteSendBoxDraft = getSendBoxDraftHook('remote', {
 const EMPTY_AT_PATH: Array<string | FileOrFolderItem> = [];
 const EMPTY_UPLOAD_FILES: string[] = [];
 
-const RemoteSendBox: React.FC<{ conversation_id: string }> = ({ conversation_id }) => {
+const assertTeamBridgeSuccess = (
+  result: void | { __bridgeError?: boolean; message?: string },
+  fallbackMessage: string
+): void => {
+  if (result && typeof result === 'object' && '__bridgeError' in result && result.__bridgeError) {
+    throw new Error(result.message || fallbackMessage);
+  }
+};
+
+const RemoteSendBox: React.FC<{ conversation_id: string; teamId?: string; agentSlotId?: string }> = ({
+  conversation_id,
+  teamId,
+  agentSlotId,
+}) => {
   const [workspacePath, setWorkspacePath] = useState('');
   const { t } = useTranslation();
   const { checkAndUpdateTitle } = useAutoTitle();
@@ -234,6 +247,7 @@ const RemoteSendBox: React.FC<{ conversation_id: string }> = ({ conversation_id 
 
   // Handle initial message from Guid page
   useEffect(() => {
+    if (teamId) return;
     const storageKey = `remote_initial_message_${conversation_id}`;
     const processedKey = `remote_initial_processed_${conversation_id}`;
 
@@ -280,7 +294,7 @@ const RemoteSendBox: React.FC<{ conversation_id: string }> = ({ conversation_id 
     // Small delay to let the component mount and response stream listener attach
     const timer = setTimeout(() => void processInitialMessage(), 300);
     return () => clearTimeout(timer);
-  }, [conversation_id, workspacePath, addOrUpdateMessage, checkAndUpdateTitle]);
+  }, [conversation_id, workspacePath, addOrUpdateMessage, checkAndUpdateTitle, teamId]);
 
   const handleFilesAdded = useCallback(
     (pastedFiles: FileMetadata[]) => {
@@ -310,37 +324,53 @@ const RemoteSendBox: React.FC<{ conversation_id: string }> = ({ conversation_id 
       const msg_id = uuid();
       const displayMessage = buildDisplayMessage(input, files, workspacePath);
 
-      const userMessage: TMessage = {
-        id: msg_id,
-        msg_id,
-        conversation_id,
-        type: 'text',
-        position: 'right',
-        content: { content: displayMessage },
-        createdAt: Date.now(),
-      };
-
-      addOrUpdateMessage(userMessage, true);
       setAiProcessing(true);
       aiProcessingRef.current = true;
 
       try {
         void checkAndUpdateTitle(conversation_id, input);
-        await ipcBridge.conversation.sendMessage.invoke({
-          input: displayMessage,
-          msg_id,
-          conversation_id,
-          files,
-        });
+        if (teamId) {
+          if (agentSlotId) {
+            const result = await ipcBridge.team.sendMessageToAgent.invoke({
+              teamId,
+              slotId: agentSlotId,
+              content: displayMessage,
+              files,
+            });
+            assertTeamBridgeSuccess(result, 'Failed to send message to remote agent');
+          } else {
+            const result = await ipcBridge.team.sendMessage.invoke({ teamId, content: displayMessage, files });
+            assertTeamBridgeSuccess(result, 'Failed to send message to remote team');
+          }
+        } else {
+          const userMessage: TMessage = {
+            id: msg_id,
+            msg_id,
+            conversation_id,
+            type: 'text',
+            position: 'right',
+            content: { content: displayMessage },
+            createdAt: Date.now(),
+          };
+          addOrUpdateMessage(userMessage, true);
+          await ipcBridge.conversation.sendMessage.invoke({
+            input: displayMessage,
+            msg_id,
+            conversation_id,
+            files,
+          });
+        }
         emitter.emit('chat.history.refresh');
       } catch (error) {
-        removeMessageByMsgId(msg_id);
+        if (!teamId) {
+          removeMessageByMsgId(msg_id);
+        }
         setAiProcessing(false);
         aiProcessingRef.current = false;
         throw error;
       }
     },
-    [addOrUpdateMessage, checkAndUpdateTitle, conversation_id, removeMessageByMsgId, workspacePath]
+    [addOrUpdateMessage, agentSlotId, checkAndUpdateTitle, conversation_id, removeMessageByMsgId, teamId, workspacePath]
   );
 
   const {
